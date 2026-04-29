@@ -24,14 +24,19 @@ static void copy_err(char *dst, int dst_sz, const char *src) {
     }
 }
 
+/* Capture both the function's own return value and libssh2 session's last
+ * recorded error. They can disagree, especially in mbedTLS backend paths
+ * where some failures don't get logged into the session. */
 static void copy_libssh2_err(char *dst, int dst_sz, LIBSSH2_SESSION *sess,
-                             const char *prefix) {
+                             const char *prefix, int fn_rc) {
     if (!dst || dst_sz <= 0) return;
     char *msg = NULL;
     int msg_len = 0;
-    int errnum = libssh2_session_last_error(sess, &msg, &msg_len, 0);
-    snprintf(dst, dst_sz, "%s rc=%d: %.*s",
-             prefix, errnum, msg_len, msg ? msg : "(no message)");
+    int sess_errnum = libssh2_session_last_error(sess, &msg, &msg_len, 0);
+    const char *msg_disp = (msg && msg_len > 0) ? msg : "(empty)";
+    int eff_len = (msg && msg_len > 0) ? msg_len : 7;
+    snprintf(dst, dst_sz, "%s fn=%d sess=%d \"%.*s\"",
+             prefix, fn_rc, sess_errnum, eff_len, msg_disp);
 }
 
 static int tcp_connect(const char *host, int port, char *err, int err_sz) {
@@ -87,15 +92,17 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
     }
     libssh2_session_set_blocking(session, 1);
 
-    if (libssh2_session_handshake(session, sock) != 0) {
-        copy_libssh2_err(err_buf, err_sz, session, "handshake");
+    int hs_rc = libssh2_session_handshake(session, sock);
+    if (hs_rc != 0) {
+        copy_libssh2_err(err_buf, err_sz, session, "handshake", hs_rc);
         libssh2_session_free(session);
         closesocket(sock);
         libssh2_exit();
         return NULL;
     }
 
-    /* Pre-check 1: can we open the key file at all? */
+    /* Pre-check 1: can we open the key file at all? Capture size + header. */
+    long key_size = 0;
     {
         FILE *kf = fopen(key_path, "rb");
         if (!kf) {
@@ -107,16 +114,18 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
             libssh2_exit();
             return NULL;
         }
+        fseek(kf, 0, SEEK_END);
+        key_size = ftell(kf);
+        fseek(kf, 0, SEEK_SET);
         char first[40] = {0};
         size_t n = fread(first, 1, sizeof(first) - 1, kf);
         fclose(kf);
         first[n] = 0;
-        /* Only validate the start; libssh2 will fully parse later. */
         if (!strstr(first, "BEGIN") ||
             (!strstr(first, "RSA PRIVATE KEY") &&
              !strstr(first, "PRIVATE KEY"))) {
             snprintf(err_buf, err_sz,
-                     "key file is not PEM. First bytes: %.30s", first);
+                     "key not PEM (size=%ld). Head: %.30s", key_size, first);
             libssh2_session_disconnect(session, "bad key");
             libssh2_session_free(session);
             closesocket(sock);
@@ -125,11 +134,12 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
         }
     }
 
-    /* Pre-check 2: ask server which auth methods it accepts for this user. */
+    /* Pre-check 2: ask server which auth methods it accepts for this user.
+     * Always include the methods string in any later auth error for context. */
     char *methods = libssh2_userauth_list(session, user, (unsigned int)strlen(user));
     if (methods && !strstr(methods, "publickey")) {
         snprintf(err_buf, err_sz,
-                 "server does not allow publickey for %s. Allowed: %s",
+                 "server rejects publickey for %s. Allowed: %s",
                  user, methods);
         libssh2_session_disconnect(session, "no pubkey method");
         libssh2_session_free(session);
@@ -144,7 +154,11 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
         pubkey_path, key_path,
         passphrase ? passphrase : "");
     if (auth != 0) {
-        copy_libssh2_err(err_buf, err_sz, session, "auth");
+        char inner[160] = {0};
+        copy_libssh2_err(inner, sizeof(inner), session, "auth", auth);
+        snprintf(err_buf, err_sz,
+                 "%s | key_size=%ld user=%s methods=[%s]",
+                 inner, key_size, user, methods ? methods : "?");
         libssh2_session_disconnect(session, "auth failed");
         libssh2_session_free(session);
         closesocket(sock);
@@ -154,7 +168,7 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
 
     LIBSSH2_CHANNEL *channel = libssh2_channel_open_session(session);
     if (!channel) {
-        copy_libssh2_err(err_buf, err_sz, session, "channel_open");
+        copy_libssh2_err(err_buf, err_sz, session, "channel_open", -1);
         libssh2_session_disconnect(session, "channel failed");
         libssh2_session_free(session);
         closesocket(sock);
@@ -163,8 +177,9 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
     }
 
     libssh2_channel_setenv(channel, "COLORTERM", "truecolor");
-    if (libssh2_channel_request_pty(channel, "xterm-256color") != 0) {
-        copy_libssh2_err(err_buf, err_sz, session, "pty");
+    int pty_rc = libssh2_channel_request_pty(channel, "xterm-256color");
+    if (pty_rc != 0) {
+        copy_libssh2_err(err_buf, err_sz, session, "pty", pty_rc);
         libssh2_channel_close(channel);
         libssh2_channel_free(channel);
         libssh2_session_disconnect(session, "pty failed");
@@ -174,8 +189,9 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
         return NULL;
     }
 
-    if (libssh2_channel_shell(channel) != 0) {
-        copy_libssh2_err(err_buf, err_sz, session, "shell");
+    int sh_rc = libssh2_channel_shell(channel);
+    if (sh_rc != 0) {
+        copy_libssh2_err(err_buf, err_sz, session, "shell", sh_rc);
         libssh2_channel_close(channel);
         libssh2_channel_free(channel);
         libssh2_session_disconnect(session, "shell failed");

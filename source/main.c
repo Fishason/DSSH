@@ -120,11 +120,12 @@ int main(int argc, char *argv[]) {
         err, sizeof(err));
 
     if (!ssh) {
-        printf("\nSSH ERROR:\n  %s\n", err);
-        printf("\nCheck:\n");
-        printf(" - SD has %s\n", cfg.key_path);
-        printf(" - server allows pubkey for %s\n", cfg.user);
-        printf(" - WiFi reachable\n");
+        printf("\nSSH ERROR:\n%s\n", err);
+        printf("\n--- legend ---\n");
+        printf("fn=N: function return\n");
+        printf("sess=N: libssh2_last_error\n");
+        printf("       0=NONE -16=AUTH_FAIL\n");
+        printf("       -18=ALLOC -19=PUBKEY_UNVERIFIED\n");
         printf("\nPress START to exit.\n");
         while (aptMainLoop()) {
             hidScanInput();
