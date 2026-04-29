@@ -81,6 +81,45 @@ for path in files_to_patch:
         print(f"  No unsigned long found: {path}")
 PYEOF
 
+echo ">>> Patching uninitialized 'ret' in _libssh2_mbedtls_pub_priv_key()..."
+# libssh2 1.11.0 src/mbedtls.c: 'int ret;' is left uninitialized; the function
+# returns it as a stack-garbage value when both mth + key allocations succeed.
+# Fixed in master but not in 1.11.0 release. Manifests on ARM (no stack zero
+# init) as the infamous "auth fn=-1 sess=0" with no useful error message.
+# Reference: https://github.com/libssh2/libssh2/blob/master/src/mbedtls.c
+python3 - <<'PYEOF'
+import re
+path = "src/mbedtls.c"
+with open(path) as f:
+    src = f.read()
+
+if "/* 3DS uninit-ret patch applied */" in src:
+    print("  Already patched: ret-init")
+else:
+    # Find:  '    int ret;\n    mbedtls_rsa_context *rsa;'  (1.11.0)
+    # Replace with:  '    int ret = 0;\n    mbedtls_rsa_context *rsa;'
+    # only inside _libssh2_mbedtls_pub_priv_key (not other functions).
+    pattern = re.compile(
+        r'(_libssh2_mbedtls_pub_priv_key\([^)]*\)\s*\{[^}]*?)\n'
+        r'(\s+)int ret;\n'
+        r'(\s+mbedtls_rsa_context \*rsa;)',
+        re.DOTALL,
+    )
+    new_src, n = pattern.subn(
+        r'\1\n\2int ret = 0;  /* 3DS uninit-ret patch applied */\n\3',
+        src,
+    )
+    if n == 1:
+        with open(path, "w") as f:
+            f.write(new_src)
+        print(f"  Patched: ret-init in {path}")
+    else:
+        raise SystemExit(
+            f"FATAL: expected exactly 1 match, found {n}. "
+            "libssh2 source layout may have changed."
+        )
+PYEOF
+
 rm -rf build-3ds
 mkdir build-3ds
 cd build-3ds
