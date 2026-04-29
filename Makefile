@@ -38,8 +38,11 @@ CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
 ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
-# M0: minimal libs. M1+ will add: -lssh2 -lmbedtls -lmbedcrypto -lmbedx509 -lcitro2d -lcitro3d -lz
-LIBS	:=	-lctru -lm
+# M1: libssh2 (built locally via build-libssh2.sh) + mbedTLS backend.
+# M4+ will add: -lcitro2d -lcitro3d (for the custom soft keyboard renderer).
+LIBS	:=	-lssh2 \
+			-lmbedtls -lmbedx509 -lmbedcrypto \
+			-lctru -lm
 
 LIBDIRS	:=	$(CTRULIB) $(PORTLIBS)
 
