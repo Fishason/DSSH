@@ -1,0 +1,33 @@
+# Build artifacts
+build/
+*.3dsx
+*.cia
+*.elf
+*.smdh
+*.map
+*.bnr
+*.icn
+*.o
+
+# Generated assets
+source/font_data.c
+source/font_data.h
+romfs/pinyin_dict.bin
+romfs/
+
+# libssh2 build outputs (M1)
+data/libssh2/
+.libssh2-built
+
+# Local config & secrets — never commit
+sd_template/3ds/3dssh/id_rsa
+sd_template/3ds/3dssh/config.ini
+*.key
+id_rsa*
+!sd_template/3ds/3dssh/id_rsa.example
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
