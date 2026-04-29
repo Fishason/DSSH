@@ -1,5 +1,7 @@
 #include "ssh_client.h"
 #include <libssh2.h>
+#include <mbedtls/pk.h>
+#include <mbedtls/error.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -148,6 +150,37 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
         return NULL;
     }
 
+    /* Pre-check 3: parse key directly with mbedTLS so we get its specific
+     * error code (libssh2's mbedTLS backend swallows mbedTLS errors and just
+     * returns -1). This is purely diagnostic — we then let libssh2 do its
+     * own parse during userauth_publickey_fromfile_ex. */
+    {
+        mbedtls_pk_context tctx;
+        mbedtls_pk_init(&tctx);
+        int mb_rc = mbedtls_pk_parse_keyfile(
+            &tctx, key_path,
+            (passphrase && *passphrase) ? passphrase : NULL);
+        if (mb_rc != 0) {
+            char mb_msg[80] = {0};
+            mbedtls_strerror(mb_rc, mb_msg, sizeof(mb_msg));
+            snprintf(err_buf, err_sz,
+                     "mbedTLS parse: rc=-0x%04X %s | path=%s",
+                     (unsigned)-mb_rc, mb_msg, key_path);
+            mbedtls_pk_free(&tctx);
+            libssh2_session_disconnect(session, "mbedtls parse");
+            libssh2_session_free(session);
+            closesocket(sock);
+            libssh2_exit();
+            return NULL;
+        }
+        /* Stash success info into err_buf as a side-channel; if any later
+         * step fails, the caller will still see the type/bits we saw. */
+        snprintf(err_buf, err_sz, "(parse OK: %s %u-bit) ",
+                 mbedtls_pk_get_name(&tctx),
+                 (unsigned)mbedtls_pk_get_bitlen(&tctx));
+        mbedtls_pk_free(&tctx);
+    }
+
     /* RSA pubkey from file. pubkey_path may be NULL — libssh2 derives it. */
     int auth = libssh2_userauth_publickey_fromfile_ex(
         session, user, (unsigned int)strlen(user),
@@ -156,15 +189,22 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
     if (auth != 0) {
         char inner[160] = {0};
         copy_libssh2_err(inner, sizeof(inner), session, "auth", auth);
+        /* Note: err_buf currently holds "(parse OK: RSA 4096-bit) " prefix
+         * from the mbedTLS pre-check success path; preserve it so we know
+         * mbedTLS itself parsed the key fine and the issue is downstream. */
+        char prefix[64] = {0};
+        snprintf(prefix, sizeof(prefix), "%.63s", err_buf);
         snprintf(err_buf, err_sz,
-                 "%s | key_size=%ld user=%s methods=[%s]",
-                 inner, key_size, user, methods ? methods : "?");
+                 "%s%s | key_size=%ld user=%s methods=[%s]",
+                 prefix, inner, key_size, user, methods ? methods : "?");
         libssh2_session_disconnect(session, "auth failed");
         libssh2_session_free(session);
         closesocket(sock);
         libssh2_exit();
         return NULL;
     }
+    /* Auth succeeded — clear the diagnostic prefix from err_buf. */
+    err_buf[0] = 0;
 
     LIBSSH2_CHANNEL *channel = libssh2_channel_open_session(session);
     if (!channel) {
