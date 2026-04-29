@@ -29,8 +29,9 @@ static void copy_libssh2_err(char *dst, int dst_sz, LIBSSH2_SESSION *sess,
     if (!dst || dst_sz <= 0) return;
     char *msg = NULL;
     int msg_len = 0;
-    libssh2_session_last_error(sess, &msg, &msg_len, 0);
-    snprintf(dst, dst_sz, "%s: %.*s", prefix, msg_len, msg ? msg : "");
+    int errnum = libssh2_session_last_error(sess, &msg, &msg_len, 0);
+    snprintf(dst, dst_sz, "%s rc=%d: %.*s",
+             prefix, errnum, msg_len, msg ? msg : "(no message)");
 }
 
 static int tcp_connect(const char *host, int port, char *err, int err_sz) {
@@ -88,6 +89,49 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
 
     if (libssh2_session_handshake(session, sock) != 0) {
         copy_libssh2_err(err_buf, err_sz, session, "handshake");
+        libssh2_session_free(session);
+        closesocket(sock);
+        libssh2_exit();
+        return NULL;
+    }
+
+    /* Pre-check 1: can we open the key file at all? */
+    {
+        FILE *kf = fopen(key_path, "rb");
+        if (!kf) {
+            snprintf(err_buf, err_sz,
+                     "open key file failed: %s (errno=%d)", key_path, errno);
+            libssh2_session_disconnect(session, "no key");
+            libssh2_session_free(session);
+            closesocket(sock);
+            libssh2_exit();
+            return NULL;
+        }
+        char first[40] = {0};
+        size_t n = fread(first, 1, sizeof(first) - 1, kf);
+        fclose(kf);
+        first[n] = 0;
+        /* Only validate the start; libssh2 will fully parse later. */
+        if (!strstr(first, "BEGIN") ||
+            (!strstr(first, "RSA PRIVATE KEY") &&
+             !strstr(first, "PRIVATE KEY"))) {
+            snprintf(err_buf, err_sz,
+                     "key file is not PEM. First bytes: %.30s", first);
+            libssh2_session_disconnect(session, "bad key");
+            libssh2_session_free(session);
+            closesocket(sock);
+            libssh2_exit();
+            return NULL;
+        }
+    }
+
+    /* Pre-check 2: ask server which auth methods it accepts for this user. */
+    char *methods = libssh2_userauth_list(session, user, (unsigned int)strlen(user));
+    if (methods && !strstr(methods, "publickey")) {
+        snprintf(err_buf, err_sz,
+                 "server does not allow publickey for %s. Allowed: %s",
+                 user, methods);
+        libssh2_session_disconnect(session, "no pubkey method");
         libssh2_session_free(session);
         closesocket(sock);
         libssh2_exit();
