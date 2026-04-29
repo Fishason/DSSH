@@ -7,11 +7,16 @@ A Nintendo 3DS native SSH terminal client with on-screen Pinyin IME, designed fo
 ## Quick start
 
 ```bash
-# 1. Build (uses devkitpro/devkitarm docker image — no host install required):
-tools/dkp.sh make
+# Env (already in /etc/profile.d/devkit-env.sh on this dev host; new shells auto-load):
+export DEVKITPRO=/opt/devkitpro
+export DEVKITARM=/opt/devkitpro/devkitARM
+export PATH=/opt/devkitpro/tools/bin:$PATH
+
+# 1. Build:
+make
 
 # 2. Push to a real 3DS via WiFi (3DS must be running Homebrew Launcher's net loader):
-tools/dkp.sh 3dslink 3dssh.3dsx
+3dslink 3dssh.3dsx
 
 # 3. Or copy 3dssh.3dsx + 3dssh.smdh to SD card /3ds/3dssh/ and launch via HBL.
 ```
@@ -38,25 +43,21 @@ Top screen (400x240)               Bottom screen (320x240)
 
 ## Build environment
 
-This project does NOT require host installation of devkitPro. It uses the official
-`devkitpro/devkitarm` Docker image via `tools/dkp.sh` wrapper. Requirements on host:
+devkitPro is installed natively at `/opt/devkitpro` (devkitARM release 65, GCC 14.2.0).
+Env vars are exported via `/etc/profile.d/devkit-env.sh`. Requirements on host:
 
-- Docker (any recent version)
-- ~5 GB free disk for the docker image + libssh2 build artifacts
+- Linux (tested Ubuntu 22.04, x86_64)
+- ~1 GB free disk for /opt/devkitpro + libssh2 build artifacts (M1+)
 - A modded 3DS for end-to-end testing
 
-### Emulator status (Azahar)
+### Why no docker / Azahar in the dev loop
 
-Azahar is the active 3DS emulator (successor to Citra/Lime3DS). The official AppImage
-requires GLIBC 2.38+ (Ubuntu 24.04+); on older hosts it fails with:
-`libc.so.6: version GLIBC_2.38 not found`. Workarounds for older hosts:
+Originally we considered Azahar 3DS emulator for self-verification on the dev box.
+Azahar AppImage requires GLIBC 2.38+ (Ubuntu 24.04), this host is 22.04 / 2.35.
+Working around it (Ubuntu 24.04 docker container running Azahar with software OpenGL
+under Xvfb) is high-effort, low-return for our use case. Instead the dev loop is:
 
-- Run Azahar in a docker container based on `ubuntu:24.04` (TODO: not yet wired)
-- Use the Flatpak distribution (also bundles its own runtime)
-- Build Azahar from source
-
-Until that's wired, this project's CI loop is:
-**build (devkitarm docker)** → **build-level checks** → **real 3DS via 3dslink/SD card**.
+**build natively** → **build-level checks** → **real 3DS via 3dslink/SD card**.
 
 ## Project layout
 
