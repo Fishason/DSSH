@@ -81,6 +81,79 @@ for path in files_to_patch:
         print(f"  No unsigned long found: {path}")
 PYEOF
 
+echo ">>> Patching gen_publickey_from_rsa() wire-format bugs..."
+# libssh2 1.11.0 src/mbedtls.c gen_publickey_from_rsa() has two distinct bugs
+# fixed in master:
+#  1) After mbedtls_mpi_write_binary(E,...), pointer p is not advanced by
+#     e_bytes — so the next htonu32(N length) overwrites E.
+#  2) Same omission after writing N. Means *keylen is computed wrong (too small).
+#  3) RSA modulus N is encoded as ssh "string" not "mpint", but for 4096-bit
+#     RSA the high bit is almost certainly 1; SSH consumers expect a leading
+#     0x00 padding byte. master uses n_bytes = mpi_size(N) + 1 so
+#     mbedtls_mpi_write_binary auto-pads a leading zero.
+# Result on the wire was a malformed pubkey blob that sshd reports as
+# "userauth_pubkey: parse key: invalid format". Apply master's fix.
+python3 - <<'PYEOF'
+import re
+path = "src/mbedtls.c"
+with open(path) as f:
+    src = f.read()
+
+if "/* 3DS gen_publickey wire-format patch applied */" in src:
+    print("  Already patched: gen_publickey")
+else:
+    # Replace the broken block.  Match the exact 1.11.0 statements after the
+    # alloc to avoid touching anything else.
+    old = (
+        "    e_bytes = (uint32_t)mbedtls_mpi_size(&rsa->MBEDTLS_PRIVATE(E));\n"
+        "    n_bytes = (uint32_t)mbedtls_mpi_size(&rsa->MBEDTLS_PRIVATE(N));\n"
+    )
+    new = (
+        "    /* 3DS gen_publickey wire-format patch applied */\n"
+        "    e_bytes = (uint32_t)mbedtls_mpi_size(&rsa->MBEDTLS_PRIVATE(E));\n"
+        "    n_bytes = (uint32_t)mbedtls_mpi_size(&rsa->MBEDTLS_PRIVATE(N)) + 1;\n"
+    )
+    if old not in src:
+        raise SystemExit("FATAL: e_bytes/n_bytes preamble not found verbatim.")
+    src = src.replace(old, new, 1)
+
+    # Insert p += e_bytes after the E mpi write.
+    old2 = (
+        "    mbedtls_mpi_write_binary(&rsa->MBEDTLS_PRIVATE(E), p, e_bytes);\n"
+        "\n"
+        "    _libssh2_htonu32(p, n_bytes);\n"
+    )
+    new2 = (
+        "    mbedtls_mpi_write_binary(&rsa->MBEDTLS_PRIVATE(E), p, e_bytes);\n"
+        "    p += e_bytes;\n"
+        "\n"
+        "    _libssh2_htonu32(p, n_bytes);\n"
+    )
+    if old2 not in src:
+        raise SystemExit("FATAL: E-write/N-htonu sequence not found verbatim.")
+    src = src.replace(old2, new2, 1)
+
+    # Insert p += n_bytes after the N mpi write.
+    old3 = (
+        "    mbedtls_mpi_write_binary(&rsa->MBEDTLS_PRIVATE(N), p, n_bytes);\n"
+        "\n"
+        "    *keylen = (size_t)(p - key);\n"
+    )
+    new3 = (
+        "    mbedtls_mpi_write_binary(&rsa->MBEDTLS_PRIVATE(N), p, n_bytes);\n"
+        "    p += n_bytes;\n"
+        "\n"
+        "    *keylen = (size_t)(p - key);\n"
+    )
+    if old3 not in src:
+        raise SystemExit("FATAL: N-write/keylen sequence not found verbatim.")
+    src = src.replace(old3, new3, 1)
+
+    with open(path, "w") as f:
+        f.write(src)
+    print(f"  Patched: gen_publickey_from_rsa wire format in {path}")
+PYEOF
+
 echo ">>> Patching uninitialized 'ret' in _libssh2_mbedtls_pub_priv_key()..."
 # libssh2 1.11.0 src/mbedtls.c: 'int ret;' is left uninitialized; the function
 # returns it as a stack-garbage value when both mth + key allocations succeed.
