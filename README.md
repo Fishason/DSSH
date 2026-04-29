@@ -45,6 +45,19 @@ This project does NOT require host installation of devkitPro. It uses the offici
 - ~5 GB free disk for the docker image + libssh2 build artifacts
 - A modded 3DS for end-to-end testing
 
+### Emulator status (Azahar)
+
+Azahar is the active 3DS emulator (successor to Citra/Lime3DS). The official AppImage
+requires GLIBC 2.38+ (Ubuntu 24.04+); on older hosts it fails with:
+`libc.so.6: version GLIBC_2.38 not found`. Workarounds for older hosts:
+
+- Run Azahar in a docker container based on `ubuntu:24.04` (TODO: not yet wired)
+- Use the Flatpak distribution (also bundles its own runtime)
+- Build Azahar from source
+
+Until that's wired, this project's CI loop is:
+**build (devkitarm docker)** → **build-level checks** → **real 3DS via 3dslink/SD card**.
+
 ## Project layout
 
 ```
