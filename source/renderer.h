@@ -3,15 +3,16 @@
 #include "terminal.h"
 #include "font_atlas.h"
 
-/* Bitmap font cell size — must match gen_font.py */
-#define FONT_CELL_W  6
-#define FONT_CELL_H  12
+/* Cell size lives in font_atlas.h (FA_CELL_W / FA_CELL_H) since it's a
+ * compile-time invariant tied to the bitmap atlas.  Re-export the names
+ * the existing renderer code uses. */
+#define FONT_CELL_W FA_CELL_W
+#define FONT_CELL_H FA_CELL_H
 
-/* Top screen is 400x240, 50 cols default; we use 66x20 for tighter packing */
-#define R_TOP_COLS  (400 / FONT_CELL_W)   /* 66 */
-#define R_TOP_ROWS  (240 / FONT_CELL_H)   /* 20 */
-#define R_BOT_COLS  (320 / FONT_CELL_W)   /* 53 */
-#define R_BOT_ROWS  (240 / FONT_CELL_H)   /* 20 */
+#define R_TOP_COLS  (400 / FONT_CELL_W)   /* 66 at 6×10 */
+#define R_TOP_ROWS  (240 / FONT_CELL_H)   /* 24 at 6×10 */
+#define R_BOT_COLS  (320 / FONT_CELL_W)
+#define R_BOT_ROWS  (240 / FONT_CELL_H)
 
 typedef struct renderer_t {
     C3D_RenderTarget *top;
