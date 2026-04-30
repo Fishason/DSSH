@@ -50,6 +50,13 @@ const char *ime_buffer(const ime_t *ime);     /* current pinyin string */
 int   ime_buffer_len(const ime_t *ime);
 int   ime_active(const ime_t *ime);            /* buffer non-empty */
 
+/* Length of the buffer prefix that actually produced the candidates.
+ * Equals ime_buffer_len() in the normal case; smaller when the user
+ * typed past a valid prefix and the engine fell back (e.g. typed
+ * "nihaoz" but only "nihao" matches → returns 5).  Returns 0 when
+ * no prefix yielded any matches. */
+int   ime_matched_prefix_len(const ime_t *ime);
+
 /* Candidate access — current page (paginate via ime_page_next/prev).
  * Indices are 0..IME_PAGE_SIZE-1 within the current page. */
 int   ime_candidate_count(const ime_t *ime);          /* visible on this page */
@@ -57,12 +64,23 @@ const char *ime_candidate(const ime_t *ime, int idx); /* NUL-terminated UTF-8 */
 
 /* Total candidates and pagination. */
 int   ime_total_candidates(const ime_t *ime);
+/* Absolute (across-pages) candidate access — useful for tests and any
+ * UI that needs to scan beyond the visible page. */
+const char *ime_candidate_at(const ime_t *ime, int abs_idx);
 int   ime_page(const ime_t *ime);
 int   ime_page_count(const ime_t *ime);
-void  ime_page_next(ime_t *ime);
-void  ime_page_prev(ime_t *ime);
+void  ime_page_next(ime_t *ime);                /* resets selection to 0 */
+void  ime_page_prev(ime_t *ime);                /* resets selection to 0 */
 
-/* Commit the candidate at `idx` (within the current page).  The buffer
- * is cleared.  Returns the committed UTF-8 string (pointer into dict)
- * or NULL if idx is out of range. */
+/* Per-page selection cursor.  Points at the candidate that A/Space
+ * commits.  Defaults to 0 after each refresh / page change.  Left/Right
+ * cursors clamp at the page edges (use page navigation to reach more). */
+int   ime_selection_idx(const ime_t *ime);
+void  ime_selection_left(ime_t *ime);
+void  ime_selection_right(ime_t *ime);
+
+/* Commit the candidate at the given page-relative index `idx`, or at
+ * the current selection.  Both clear the buffer.  Returned pointer is
+ * stable for the dict's lifetime; NULL on out-of-range. */
 const char *ime_select(ime_t *ime, int idx);
+const char *ime_select_current(ime_t *ime);

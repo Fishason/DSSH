@@ -48,13 +48,27 @@ DICT_FILES = [
     "tencent.dict.yaml",
 ]
 
+# Words removed from the output dict on user request.
+BLOCKED_WORDS = {
+    "江泽民",
+    "江泽民同志",
+}
+
+# Per-syllable abbreviation: the first letter of every syllable.  Adding
+# entries with the abbreviated pinyin lets users type "nh" and still
+# reach 你好 (ni hao) — common in Chinese IMEs as "shuangpin lite" or
+# "shengmu input".  Abbrev entries get a reduced weight so the full-
+# pinyin form (when typed completely) still ranks first.
+ABBREV_WEIGHT_FACTOR = 0.3
+
 
 def parse_dict_file(path):
-    """Yield (word, joined_pinyin, weight) for each entry.
+    """Yield (word, joined_pinyin, weight, syllables_tuple) for each entry.
 
     rime-ice format after the YAML frontmatter `---` ... `...` block:
         <word>\\t<space-separated-pinyin>\\t<weight>
-    Lines starting with `#` and blank lines are ignored.
+    The syllables tuple is needed downstream to derive abbreviation
+    entries (one-letter-per-syllable shortcuts like "nh" → 你好).
     """
     after_doc_end = False
     with open(path, encoding="utf-8") as f:
@@ -77,55 +91,96 @@ def parse_dict_file(path):
                 weight = 1
             if not word or not pinyin_raw:
                 continue
-            # Join syllables and drop any apostrophe separators rime-ice
-            # occasionally uses ("xi'an" → "xian").
-            pinyin = pinyin_raw.replace(" ", "").replace("'", "")
-            # Only ASCII a-z is valid; reject anything else (rare but
-            # keeps the binary compact).
-            if not pinyin or not all("a" <= c <= "z" for c in pinyin):
+            # rime occasionally uses an apostrophe to disambiguate
+            # syllable boundaries ("xi'an"); strip it so the joined
+            # form is just letters.
+            cleaned = pinyin_raw.replace("'", "")
+            syllables = tuple(s for s in cleaned.split() if s)
+            joined = "".join(syllables)
+            # Only ASCII a-z is valid; reject anything else.
+            if not joined or not all("a" <= c <= "z" for c in joined):
                 continue
-            yield (word, pinyin, weight)
+            yield (word, joined, weight, syllables)
 
 
 def main():
     if not SRC_DIR.exists():
         sys.exit(f"FATAL: {SRC_DIR} missing — run tools/fetch_pinyin_dict.sh first")
 
-    # Phase 1: collect, dedupe (word, pinyin), keep the max weight seen.
-    entries = {}  # (word, pinyin) -> weight
+    # Phase 1: collect, dedupe (word, pinyin), keep the max weight seen
+    # plus the syllable splitting (needed for abbrev entries).
+    entries = {}  # (word, pinyin) -> (weight, syllables)
+    skipped_blocked = 0
     for fname in DICT_FILES:
         path = SRC_DIR / fname
         if not path.exists():
             print(f"  WARN: {path} missing, skipping")
             continue
         before = len(entries)
-        for word, pinyin, weight in parse_dict_file(path):
+        for word, pinyin, weight, syl in parse_dict_file(path):
+            if word in BLOCKED_WORDS:
+                skipped_blocked += 1
+                continue
             key = (word, pinyin)
-            if key not in entries or weight > entries[key]:
-                entries[key] = weight
+            if key not in entries or weight > entries[key][0]:
+                entries[key] = (weight, syl)
         print(f"  {fname:<22} +{len(entries) - before:>7} unique  "
               f"(running total: {len(entries):>7})")
+    if skipped_blocked:
+        print(f"  blocked: {skipped_blocked} entries removed by BLOCKED_WORDS")
 
     if not entries:
         sys.exit("FATAL: no entries parsed")
 
-    # Phase 2a: trim to the top-N by weight.  rime-ice has ~900k entries
-    # combined; the long-tail is rare technical / regional / archaic
-    # vocab that bloats the binary without helping everyday input.
-    # 300k caps the .3dsx around 16 MB while keeping ~99% coverage of
-    # daily typing (the user explicitly chose this size).
+    # Phase 2a: trim full-pinyin entries to the top-N by weight.
+    # rime-ice has ~900k entries combined; the long-tail is rare
+    # technical / regional / archaic vocab that bloats the binary
+    # without helping everyday input.  300k caps the .3dsx around
+    # 14 MB even with abbrev entries added in Phase 2c.
     MAX_ENTRIES = 300_000
-    flat = [(p, w, weight) for (w, p), weight in entries.items()]
+    flat = [(pinyin, word, w, syl)
+            for (word, pinyin), (w, syl) in entries.items()]
     if len(flat) > MAX_ENTRIES:
         flat.sort(key=lambda e: -e[2])              # by weight desc
         cut_weight = flat[MAX_ENTRIES - 1][2]
         flat = flat[:MAX_ENTRIES]
-        print(f"  trimmed to top {MAX_ENTRIES:,} (cutoff weight = {cut_weight})")
+        print(f"  full-pinyin trimmed to top {MAX_ENTRIES:,} "
+              f"(cutoff weight = {cut_weight})")
 
-    # Phase 2b: sort by pinyin asc, then weight desc, then word asc.
-    # The pinyin sort is required for binary-search prefix lookup at
-    # runtime; the secondary keys make the on-disk order deterministic.
-    sorted_entries = sorted(flat, key=lambda e: (e[0], -e[2], e[1]))
+    # Phase 2b: derive abbreviation entries — one letter per syllable.
+    # E.g. (你好, "nihao", 70000, ("ni","hao")) → +(你好, "nh", 21000).
+    # Skip entries where the abbreviation equals the full pinyin (1
+    # syllable) or where any syllable is empty.  Dedupe so the same
+    # (word, abbrev) only appears once even if it would arise from
+    # multiple full-pinyin variants.
+    abbrev_map = {}  # (word, abbrev) -> weight
+    for pinyin, word, weight, syllables in flat:
+        if len(syllables) < 2:
+            continue
+        abbrev = "".join(s[0] for s in syllables)
+        if abbrev == pinyin:
+            continue
+        if not all("a" <= c <= "z" for c in abbrev):
+            continue
+        key = (word, abbrev)
+        adj  = max(1, int(weight * ABBREV_WEIGHT_FACTOR))
+        if key not in abbrev_map or adj > abbrev_map[key]:
+            abbrev_map[key] = adj
+    abbrev_entries = [(abbrev, word, w, ()) for (word, abbrev), w in abbrev_map.items()]
+    print(f"  abbrev entries added: {len(abbrev_entries):,}")
+
+    # Phase 2c: combine + sort by pinyin asc, weight desc, word asc.
+    # Re-dedupe via dict to defend against the rare case where an
+    # abbreviation collides with a real full-pinyin spelling.
+    combined = {}
+    for pinyin, word, w, _ in (flat + abbrev_entries):
+        key = (pinyin, word)
+        if key not in combined or w > combined[key]:
+            combined[key] = w
+    sorted_entries = sorted(
+        ((p, w, weight) for (p, w), weight in combined.items()),
+        key=lambda e: (e[0], -e[2], e[1]),
+    )
 
     # Phase 3: build string pools, deduplicating.
     pinyin_offsets = {}      # pinyin -> offset in pool

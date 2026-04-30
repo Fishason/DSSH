@@ -4,21 +4,21 @@
 #include <string.h>
 
 /* ──────────────────────────────────────────────────────────────────────
- * D-pad auto-repeat tuning (carry-over from M3 polish; you can re-tune)
+ * D-pad / B auto-repeat tuning
  * ──────────────────────────────────────────────────────────────────────
- * 3DS runs at 60 fps — 1 frame ≈ 16.7 ms.
+ * 3DS runs at 60 fps — 1 frame ≈ 16.7 ms.  Tuned faster in M7 polish
+ * after user feedback that long-press navigation / delete felt sluggish.
  *
- * DPAD_INITIAL_DELAY: frames the user must hold a direction before
- *                     auto-repeat kicks in.
+ * DPAD_INITIAL_DELAY: frames before auto-repeat kicks in.
  * dpad_repeat_period(phase): frames between successive emissions.
- *                            Lower = faster.  Currently a 3-step ramp.
+ *                            Lower = faster.  Three-step accelerating ramp.
  */
-#define DPAD_INITIAL_DELAY 25
+#define DPAD_INITIAL_DELAY 15        /* 250 ms initial pause (was 25/417ms) */
 
 static int dpad_repeat_period(int phase) {
-    if (phase <  60) return 10;   /* first 1.0 s: ~6/sec */
-    if (phase < 150) return 5;    /* next  1.5 s: ~12/sec */
-    return 3;                     /* after 2.5 s: ~20/sec */
+    if (phase <  30) return 5;    /* first 0.5 s: 12/sec  (was  6/sec) */
+    if (phase <  90) return 2;    /* next  1.0 s: 30/sec  (was 12/sec) */
+    return 1;                     /* after 1.5 s: 60/sec  (was 20/sec) */
 }
 
 /* ────────────────────────────────────────────────────────────────────── */
@@ -156,12 +156,17 @@ const char *keyboard_handle_input(keyboard_t *kbd,
         }
         kbd->dpad_frames++;
         if (fire) {
-            /* IME mode: ←→ pages through candidates instead of sending
-             * arrow keys.  Up/Down still pass through normally. */
-            if (kbd->ime && ime_active(kbd->ime) &&
-                (dpad_active == KEY_DLEFT || dpad_active == KEY_DRIGHT)) {
-                if (dpad_active == KEY_DLEFT) ime_page_prev(kbd->ime);
-                else                          ime_page_next(kbd->ime);
+            /* IME mode swaps the D-pad onto candidate navigation:
+             *   Up    → previous page
+             *   Down  → next page
+             *   Left  → selection cursor left within page
+             *   Right → selection cursor right within page
+             * Arrow keys still go through normally when no buffer. */
+            if (kbd->ime && ime_active(kbd->ime)) {
+                if      (dpad_active == KEY_DUP)    ime_page_prev(kbd->ime);
+                else if (dpad_active == KEY_DDOWN)  ime_page_next(kbd->ime);
+                else if (dpad_active == KEY_DLEFT)  ime_selection_left(kbd->ime);
+                else if (dpad_active == KEY_DRIGHT) ime_selection_right(kbd->ime);
                 return NULL;
             }
             const char *seq;
@@ -173,8 +178,18 @@ const char *keyboard_handle_input(keyboard_t *kbd,
         }
     }
 
-    /* A → Enter */
+    /* A → Enter, except in IME mode where it commits the current
+     * selection (analogous to pressing Enter in fcitx/sogou). */
     if (keys_down & KEY_A) {
+        if (kbd->ime && ime_active(kbd->ime)) {
+            const char *committed = ime_select_current(kbd->ime);
+            if (committed) {
+                mark_event(kbd, "ENT");
+                /* Forward the dict pointer directly — it stays valid
+                 * for the dict's lifetime so we don't need to copy. */
+                return committed;
+            }
+        }
         mark_event(kbd, "ENT");
         if (term && term->sb_offset) terminal_scroll_view(term, -term->sb_offset);
         return emit_byte(kbd, '\r');

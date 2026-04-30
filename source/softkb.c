@@ -135,14 +135,20 @@ static const softkey_t keys_letters[] = {
 };
 #define N_LETTERS (sizeof(keys_letters) / sizeof(keys_letters[0]))
 
+/* Absolute-X variant of K — used for the symbols row 1 where we want
+ * 10 keys with no stagger (so `(` and `)` line up with `9` and `0`). */
+#define KX(absx, row, ch, lbl) \
+    { (absx), ROW_Y(row), KEY_W - 2, KEY_H, (ch), NULL, (lbl), KIND_CHAR }
+
 /* ── Page 2: Symbols / Numbers ─────────────────────────────────────── */
 static const softkey_t keys_symbols[] = {
     /* row 0: 1-9 0 */
     K(0,0,'1',"1"), K(1,0,'2',"2"), K(2,0,'3',"3"), K(3,0,'4',"4"), K(4,0,'5',"5"),
     K(5,0,'6',"6"), K(6,0,'7',"7"), K(7,0,'8',"8"), K(8,0,'9',"9"), K(9,0,'0',"0"),
-    /* row 1: shifted-numbers (with stagger) */
-    K(0,1,'!',"!"), K(1,1,'@',"@"), K(2,1,'#',"#"), K(3,1,'$',"$"), K(4,1,'%',"%"),
-    K(5,1,'^',"^"), K(6,1,'&',"&"), K(7,1,'*',"*"), K(8,1,'(',"("),
+    /* row 1: 10 shifted-numbers, no stagger so '(' and ')' align with '9' '0' */
+    KX(  1,1,'!',"!"), KX( 33,1,'@',"@"), KX( 65,1,'#',"#"), KX( 97,1,'$',"$"),
+    KX(129,1,'%',"%"), KX(161,1,'^',"^"), KX(193,1,'&',"&"), KX(225,1,'*',"*"),
+    KX(257,1,'(',"("), KX(289,1,')',")"),
     /* row 2: more symbols (with bigger stagger) */
     K(0,2,'-',"-"), K(1,2,'+',"+"), K(2,2,'=',"="), K(3,2,'[',"["), K(4,2,']',"]"),
     K(5,2,';',";"), K(6,2,':',":"), K(7,2,'\'',"'"), K(8,2,'/',"/"),
@@ -364,9 +370,10 @@ const char *softkb_touch(softkb_t *kb,
             return k->seq;
         case KIND_SPACE:
             /* In CN mode with an active pinyin buffer, space commits
-             * the first candidate (standard pinyin IME convention). */
+             * the currently-selected candidate (defaults to the first
+             * one until the user moves the cursor with D-pad ←→). */
             if (route_to_ime && ime_active(kb->ime)) {
-                return ime_select(kb->ime, 0);
+                return ime_select_current(kb->ime);
             }
             return keyboard_emit_for(kbd, k->base);
         case KIND_CHAR:
@@ -544,10 +551,11 @@ static uint32_t key_label_color_resting(const softkey_t *k) {
 
 /* ── status / candidate row ─────────────────────────────────────────── */
 
-#define COL_IME_PINYIN_FG    0xa6e3a1ff   /* pinyin buffer text — green */
-#define COL_IME_CANDIDATE_FG 0xcdd6f4ff   /* main candidate text */
-#define COL_IME_FIRST_HL     0x89b4fa30   /* faint blue under first cand */
-#define COL_IME_PAGE_HINT    0x6c7086ff   /* "1/4" page indicator */
+#define COL_IME_PINYIN_FG     0xa6e3a1ff  /* matched pinyin chars  — green */
+#define COL_IME_PINYIN_NOMATCH 0xf38ba8ff /* unmatched buffer tail — red */
+#define COL_IME_CANDIDATE_FG  0xcdd6f4ff  /* main candidate text */
+#define COL_IME_SELECTED_BG   0x89b4fa66  /* highlight under selected cand */
+#define COL_IME_PAGE_HINT     0x6c7086ff  /* "1/4" page indicator */
 
 /* Lay out the IME bar: pinyin buffer + visible candidates within the
  * candidate strip.  Records hit-test boxes into kb->cand_box_*.
@@ -557,14 +565,28 @@ static int draw_ime_strip(softkb_t *kb,
                           int strip_x, int strip_end, int strip_y) {
     if (!kb->ime || !ime_active(kb->ime)) return 0;
 
-    /* Pinyin buffer — narrow font, dim green, with a separating dot. */
-    const char *buf = ime_buffer(kb->ime);
     int x = strip_x + 4;
     int y = strip_y + (STATUS_H - 4 - CELL_H) / 2;
-    renderer_draw_text_px(x, y, buf, COL_IME_PINYIN_FG);
-    x += renderer_utf8_text_width_px(buf);
-    renderer_draw_text_px(x, y, " ", COL_IME_PAGE_HINT);
-    x += CELL_W + 4;
+
+    /* Buffer display — split into matched (green) and unmatched (red)
+     * portions so the user sees which part of their input still has
+     * candidates and which trailing letters they should backspace. */
+    const char *buf  = ime_buffer(kb->ime);
+    int buf_len      = ime_buffer_len(kb->ime);
+    int matched_len  = ime_matched_prefix_len(kb->ime);
+    if (matched_len > 0) {
+        char head[IME_BUFFER_MAX + 1];
+        memcpy(head, buf, (size_t)matched_len);
+        head[matched_len] = 0;
+        renderer_draw_text_px(x, y, head, COL_IME_PINYIN_FG);
+        x += matched_len * CELL_W;
+    }
+    if (matched_len < buf_len) {
+        renderer_draw_text_px(x, y, buf + matched_len,
+                              COL_IME_PINYIN_NOMATCH);
+        x += (buf_len - matched_len) * CELL_W;
+    }
+    x += 6;  /* gap between buffer and candidates */
 
     /* Page hint "p/n" before the candidates if multi-page. */
     int page_count = ime_page_count(kb->ime);
@@ -576,23 +598,21 @@ static int draw_ime_strip(softkb_t *kb,
         x += renderer_utf8_text_width_px(hint) + 6;
     }
 
-    /* Lay out the current page's candidates left-to-right.  Stop when
-     * the next one would overflow the strip — the trailing ones stay
-     * in the same page (D-pad → advances pages anyway). */
+    /* Lay out the current page's candidates left-to-right.  The
+     * selection cursor (driven by D-pad ←→) gets a stronger
+     * highlight so the user can see which one A/Space commits. */
     int n_in_page = ime_candidate_count(kb->ime);
+    int sel       = ime_selection_idx(kb->ime);
     int n_drawn   = 0;
     for (int i = 0; i < n_in_page && n_drawn < IME_PAGE_SIZE; i++) {
         const char *cand = ime_candidate(kb->ime, i);
         if (!cand) break;
         int w = renderer_utf8_text_width_px(cand);
-        /* +6 px gap between candidates */
         if (x + w > strip_end - 2) break;
-        if (i == 0) {
-            /* faint highlight under the first candidate so users know
-             * Space commits it */
+        if (i == sel) {
             C2D_DrawRectSolid((float)(x - 2), (float)(strip_y + 2),
                               0.072f, (float)(w + 4), (float)(STATUS_H - 8),
-                              rgba_to_c2d_(COL_IME_FIRST_HL));
+                              rgba_to_c2d_(COL_IME_SELECTED_BG));
         }
         renderer_draw_text_px(x, y, cand, COL_IME_CANDIDATE_FG);
         kb->cand_box_x[n_drawn] = x - 2;

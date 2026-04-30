@@ -56,17 +56,22 @@ struct ime_t {
     /* Current pinyin input. */
     char buffer[IME_BUFFER_MAX + 1];
     int  buffer_len;
+    /* Length of the buffer prefix that actually matched something —
+     * smaller than buffer_len when the user typed past a valid prefix
+     * and the engine fell back to a shorter one. */
+    int  matched_prefix_len;
 
     /* Candidates for the current buffer.  We gather up to 16k matching
      * entries, qsort by freq desc, then keep the top 256 as
-     * `candidates` (pointers into word_pool).  Pagination is purely a
-     * view onto this fixed array. */
+     * `candidates` (pointers into word_pool).  Pagination + selection
+     * are pure views onto this fixed array. */
     const struct dict_entry *gathered[IME_GATHER_MAX];
     int n_gathered;
 
     const char *candidates[IME_MAX_CANDIDATES];
     int  n_candidates;
     int  page;
+    int  selection_idx;     /* 0..page_count-1 within the current page */
 };
 
 /* ── helpers ─────────────────────────────────────────────────────── */
@@ -97,21 +102,52 @@ static int lower_bound_pinyin(const ime_t *ime, const char *prefix) {
     return lo;
 }
 
-static void refresh_candidates(ime_t *ime) {
-    ime->n_gathered   = 0;
-    ime->n_candidates = 0;
-    ime->page         = 0;
-    if (ime->buffer_len == 0) return;
+/* Try to gather entries whose pinyin starts with the buffer's first
+ * `len` bytes.  Returns the number of entries gathered (also stored in
+ * ime->n_gathered).  Used both for the first attempt (len=buffer_len)
+ * and the fallback shorter-prefix retries. */
+static int gather_for_prefix_len(ime_t *ime, int len) {
+    ime->n_gathered = 0;
+    if (len <= 0) return 0;
+
+    /* Build a NUL-terminated copy of the prefix we're searching for so
+     * the lower_bound's strcmp behaves correctly. */
+    char prefix[IME_BUFFER_MAX + 1];
+    memcpy(prefix, ime->buffer, (size_t)len);
+    prefix[len] = 0;
 
     int total = (int)ime->hdr->n_entries;
-    int lo    = lower_bound_pinyin(ime, ime->buffer);
+    int lo    = lower_bound_pinyin(ime, prefix);
     for (int i = lo;
          i < total && ime->n_gathered < IME_GATHER_MAX;
          i++) {
         const char *py = entry_pinyin(ime, i);
-        if (strncmp(py, ime->buffer, (size_t)ime->buffer_len) != 0) break;
+        if (strncmp(py, prefix, (size_t)len) != 0) break;
         ime->gathered[ime->n_gathered++] = &ime->entries[i];
     }
+    return ime->n_gathered;
+}
+
+static void refresh_candidates(ime_t *ime) {
+    ime->n_gathered        = 0;
+    ime->n_candidates      = 0;
+    ime->page              = 0;
+    ime->selection_idx     = 0;
+    ime->matched_prefix_len = 0;
+    if (ime->buffer_len == 0) return;
+
+    /* First try the full buffer.  If nothing matches, walk the prefix
+     * back one char at a time until we find candidates or run out of
+     * letters.  This way "nihao" + accidental extra "z" still surfaces
+     * 你好 instead of an empty list. */
+    int matched_len = 0;
+    for (int len = ime->buffer_len; len > 0; len--) {
+        if (gather_for_prefix_len(ime, len) > 0) {
+            matched_len = len;
+            break;
+        }
+    }
+    ime->matched_prefix_len = matched_len;
     if (ime->n_gathered == 0) return;
 
     qsort(ime->gathered, (size_t)ime->n_gathered,
@@ -186,11 +222,13 @@ void ime_backspace(ime_t *ime) {
 
 void ime_clear(ime_t *ime) {
     if (!ime) return;
-    ime->buffer[0]    = 0;
-    ime->buffer_len   = 0;
-    ime->n_gathered   = 0;
-    ime->n_candidates = 0;
-    ime->page         = 0;
+    ime->buffer[0]          = 0;
+    ime->buffer_len         = 0;
+    ime->matched_prefix_len = 0;
+    ime->n_gathered         = 0;
+    ime->n_candidates       = 0;
+    ime->page               = 0;
+    ime->selection_idx      = 0;
 }
 
 const char *ime_buffer(const ime_t *ime) {
@@ -202,11 +240,19 @@ int ime_buffer_len(const ime_t *ime) {
 int ime_active(const ime_t *ime) {
     return ime && ime->buffer_len > 0;
 }
+int ime_matched_prefix_len(const ime_t *ime) {
+    return ime ? ime->matched_prefix_len : 0;
+}
 
 /* ── candidates / pagination ─────────────────────────────────────── */
 
 int ime_total_candidates(const ime_t *ime) {
     return ime ? ime->n_candidates : 0;
+}
+
+const char *ime_candidate_at(const ime_t *ime, int abs_idx) {
+    if (!ime || abs_idx < 0 || abs_idx >= ime->n_candidates) return NULL;
+    return ime->candidates[abs_idx];
 }
 
 int ime_candidate_count(const ime_t *ime) {
@@ -238,12 +284,33 @@ void ime_page_next(ime_t *ime) {
     if (!ime) return;
     int max_page = ime_page_count(ime) - 1;
     if (max_page < 0) return;
-    if (ime->page < max_page) ime->page++;
+    if (ime->page < max_page) {
+        ime->page++;
+        ime->selection_idx = 0;
+    }
 }
 
 void ime_page_prev(ime_t *ime) {
     if (!ime) return;
-    if (ime->page > 0) ime->page--;
+    if (ime->page > 0) {
+        ime->page--;
+        ime->selection_idx = 0;
+    }
+}
+
+int ime_selection_idx(const ime_t *ime) {
+    return ime ? ime->selection_idx : 0;
+}
+
+void ime_selection_left(ime_t *ime) {
+    if (!ime) return;
+    if (ime->selection_idx > 0) ime->selection_idx--;
+}
+
+void ime_selection_right(ime_t *ime) {
+    if (!ime) return;
+    int n = ime_candidate_count(ime);
+    if (ime->selection_idx < n - 1) ime->selection_idx++;
 }
 
 const char *ime_select(ime_t *ime, int idx) {
@@ -251,4 +318,8 @@ const char *ime_select(ime_t *ime, int idx) {
     if (!committed) return NULL;
     ime_clear(ime);
     return committed;
+}
+
+const char *ime_select_current(ime_t *ime) {
+    return ime ? ime_select(ime, ime->selection_idx) : NULL;
 }

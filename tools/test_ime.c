@@ -19,10 +19,12 @@ static int failures = 0;
     failures++; \
 } while (0)
 
+/* Scan all candidates (across pages), not just the visible page. */
 static int has_candidate(const ime_t *ime, const char *expected) {
-    int n = ime_candidate_count(ime);
-    for (int i = 0; i < n; i++) {
-        if (strcmp(ime_candidate(ime, i), expected) == 0) return i;
+    int total = ime_total_candidates(ime);
+    for (int i = 0; i < total; i++) {
+        const char *c = ime_candidate_at(ime, i);
+        if (c && strcmp(c, expected) == 0) return i;
     }
     return -1;
 }
@@ -114,11 +116,86 @@ int main(int argc, char **argv) {
     ime_page_prev(ime);
     if (ime_page(ime) != 0) FAIL("page should be 0 after page_prev");
 
-    /* ── 8. nonsense prefix gives empty list, not crash ───────── */
+    /* ── 8. fallback prefix: typing past valid pinyin still yields
+     *      candidates for the longest valid prefix.  The exact
+     *      matched length depends on what's in the dict (abbrev
+     *      entries can make "zz", "zzz" valid too). ─────────── */
     ime_clear(ime);
     type(ime, "zzzzz");
-    if (ime_candidate_count(ime) != 0)
-        FAIL("'zzzzz' should yield no candidates");
+    int mlen = ime_matched_prefix_len(ime);
+    if (mlen <= 0 || mlen >= 5)
+        FAIL("'zzzzz' should fall back to a strict prefix, got matched_prefix_len=%d", mlen);
+    if (ime_candidate_count(ime) == 0)
+        FAIL("'zzzzz' fallback should yield candidates");
+    printf("  zzzzz matched_prefix_len=%d, top: %s\n",
+           mlen, ime_candidate(ime, 0));
+
+    /* ── 8b. Prefix fallback: typing past a valid prefix still
+     *      surfaces the matches for the prefix that fits. ──────── */
+    ime_clear(ime);
+    type(ime, "nihaoz");   /* nihao + accidental z */
+    if (ime_matched_prefix_len(ime) != 5)
+        FAIL("matched_prefix_len should be 5 for 'nihaoz', got %d",
+             ime_matched_prefix_len(ime));
+    if (has_candidate(ime, "你好") < 0)
+        FAIL("'你好' should appear via prefix fallback for 'nihaoz'");
+    print_candidates(ime, "nihaoz→ni..");
+
+    /* ── 8c. Abbreviation entries: nh → 你好, wm → 我们, sj → 世界 ── */
+    const char *abbrev_cases[][2] = {
+        { "nh",   "你好" },
+        { "wm",   "我们" },
+        { "sj",   "世界" },
+        { "zw",   "中文" },
+        { "xx",   "谢谢" },
+        { NULL, NULL },
+    };
+    int abbrev_hits = 0;
+    for (int i = 0; abbrev_cases[i][0]; i++) {
+        ime_clear(ime);
+        type(ime, abbrev_cases[i][0]);
+        int found = has_candidate(ime, abbrev_cases[i][1]);
+        if (found >= 0) {
+            abbrev_hits++;
+            printf("  %s → %s (idx=%d)\n",
+                   abbrev_cases[i][0], abbrev_cases[i][1], found);
+        } else {
+            printf("  %s → ✗ '%s' not in abbrev candidates\n",
+                   abbrev_cases[i][0], abbrev_cases[i][1]);
+            FAIL("abbrev '%s' missing", abbrev_cases[i][0]);
+        }
+    }
+    printf("  abbrev: %d/5 hit\n", abbrev_hits);
+
+    /* ── 8d. Selection cursor: left/right within page ──────────── */
+    ime_clear(ime);
+    type(ime, "nihao");
+    if (ime_selection_idx(ime) != 0)
+        FAIL("selection should default to 0");
+    ime_selection_right(ime);
+    if (ime_selection_idx(ime) != 1)
+        FAIL("selection_right should give 1, got %d", ime_selection_idx(ime));
+    ime_selection_right(ime);
+    if (ime_selection_idx(ime) != 2)
+        FAIL("selection should be 2 after 2x right");
+    ime_selection_left(ime);
+    if (ime_selection_idx(ime) != 1)
+        FAIL("selection_left from 2 should give 1");
+    /* commit_current at idx 1 */
+    const char *cur = ime_candidate(ime, 1);
+    const char *committed = ime_select_current(ime);
+    if (!cur || !committed || strcmp(cur, committed) != 0)
+        FAIL("ime_select_current should commit at selection idx");
+    if (ime_buffer_len(ime) != 0)
+        FAIL("buffer should be empty after select_current");
+
+    /* ── 8e. Blocked words gone ─────────────────────────────────── */
+    ime_clear(ime);
+    type(ime, "jiangzemin");
+    if (has_candidate(ime, "江泽民") >= 0)
+        FAIL("'江泽民' should be blocked");
+    if (has_candidate(ime, "江泽民同志") >= 0)
+        FAIL("'江泽民同志' should be blocked");
 
     /* ── 9. several common everyday words ─────────────────────── */
     const char *cases[][2] = {
