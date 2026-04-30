@@ -53,7 +53,24 @@ typedef struct terminal_t {
 
     int cursor_visible;
     int cursor_blink_count;
+
+    /* xterm mouse-tracking state.  Set by parser when server emits
+     *   ESC[?1000h / ?1002h / ?1003h    (any mouse tracking enabled)
+     *   ESC[?1006h                       (SGR encoding, recommended by tmux)
+     * and cleared by the corresponding `l` (low) variants.  When both
+     * mouse_proto > 0 *and* mouse_sgr is set, the client should send
+     *   ESC[<button;col;rowM
+     * for every press (and "m" for release) instead of acting locally on
+     * scrolls / clicks.  This is how PC terminals make tmux's mouse
+     * support transparent. */
+    int mouse_proto;   /* 0 = off; otherwise 1000/1002/1003 (last set wins) */
+    int mouse_sgr;     /* ESC[?1006h: encode as SGR (\x1b[<...M) */
 } terminal_t;
+
+/* Convenience: true when the server has enabled any mouse tracking mode. */
+static inline int terminal_mouse_enabled(const terminal_t *t) {
+    return t && t->mouse_proto != 0;
+}
 
 terminal_t *terminal_init(int cols, int rows);
 void        terminal_free(terminal_t *term);

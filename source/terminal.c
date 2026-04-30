@@ -340,6 +340,20 @@ static void handle_csi(terminal_t *t, char final, const char *param_str) {
                         if (on) { t->saved_x=t->cur_x; t->saved_y=t->cur_y; }
                         else    { t->cur_x=t->saved_x; t->cur_y=t->saved_y; }
                         break;
+                    /* xterm mouse-tracking modes.  When tmux has
+                     * `set -g mouse on` it emits these on startup and
+                     * the terminal is supposed to forward mouse events
+                     * (especially scroll-wheel) back as escape sequences
+                     * — that's how PC terminals' scroll wheel "just
+                     * works" inside tmux. */
+                    case 1000:        /* X11 mouse: press + release */
+                    case 1002:        /* button-event tracking         */
+                    case 1003:        /* any-event tracking             */
+                        t->mouse_proto = on ? p1 : 0;
+                        break;
+                    case 1006:        /* SGR encoding (recommended)    */
+                        t->mouse_sgr = on;
+                        break;
                     default: break;
                 }
             }

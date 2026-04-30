@@ -72,14 +72,28 @@ const char *keyboard_handle_input(keyboard_t *kbd,
         return NULL;
     }
 
-    /* Circle Pad always scrolls the local scrollback buffer (no mode toggle).
-     * Throttled so a sustained push scrolls ~12 lines/sec.  Any subsequent
-     * key press will snap the view back to the bottom (handled in main.c
-     * via terminal_scroll_view(-sb_offset) after every produced byte). */
-    if (term && (circle_dy > 50 || circle_dy < -50)) {
+    /* Circle Pad scrolls.  Two paths:
+     *
+     *   (a) Server has enabled xterm mouse tracking (tmux's `set -g mouse on`
+     *       does this on startup): forward as a SGR wheel event so tmux's
+     *       copy-mode kicks in transparently — same UX as PC terminals.
+     *
+     *   (b) No mouse tracking: scroll our local 500-row scrollback buffer.
+     *       Convenience for non-tmux output (e.g. `cat largefile`).
+     *
+     * Either way we throttle to ~12 ticks/sec so a sustained stick push
+     * doesn't flood. */
+    if ((circle_dy > 50 || circle_dy < -50)) {
         if (++kbd->scroll_timer >= 5) {
             kbd->scroll_timer = 0;
-            terminal_scroll_view(term, circle_dy > 0 ? 1 : -1);
+            if (term && term->mouse_proto && term->mouse_sgr) {
+                /* Encode wheel button (64=up, 65=down) at fake col/row 1,1.
+                 * tmux only cares that *some* mouse event arrived. */
+                return emit(kbd, circle_dy > 0
+                            ? "\x1b[<64;1;1M"
+                            : "\x1b[<65;1;1M");
+            }
+            if (term) terminal_scroll_view(term, circle_dy > 0 ? 1 : -1);
         }
         return NULL;
     } else {
