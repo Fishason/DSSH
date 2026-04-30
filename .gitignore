@@ -15,6 +15,14 @@ source/font_data.h
 romfs/pinyin_dict.bin
 romfs/
 
+# Downloaded fonts (re-fetch via tools/fetch_fonts.sh)
+data/fonts/
+
+# Test screenshots & SD card snapshots
+3dssh/
+*.HEIC
+*.heic
+
 # libssh2 build outputs (M1)
 data/libssh2/
 .libssh2-built

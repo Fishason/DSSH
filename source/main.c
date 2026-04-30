@@ -1,24 +1,18 @@
 /*
- * 3dssh — Nintendo 3DS SSH client (M1 milestone).
+ * 3dssh — Nintendo 3DS SSH client (M3).
  *
- * Scope of this milestone:
- *   - libssh2 + mbedTLS over 3DS BSD sockets
- *   - RSA public-key authentication (key from SD card)
- *   - sdmc:/3ds/3dssh/config.ini for host/user/key path
- *   - Console-mode display (built-in libctru ANSI subset)
- *   - System swkbd applet for input (real keyboard comes in M4)
+ * M3 brings:
+ *   - citro2d-based top-screen ANSI terminal (replaces libctru consoleInit)
+ *   - bitmap font atlas with full ANSI 256/TrueColor + box-drawing
+ *   - bottom-screen status panel (citro2d) with modifier-state indicators
+ *   - sticky Ctrl modifier state machine driven by SELECT
+ *   - Circle Pad scrollback navigation (Y toggles scroll mode)
+ *   - X still pops system swkbd applet for typing (M4 will replace with
+ *     a custom on-screen keyboard)
  *
- * Not yet:
- *   - citro2d rendering, custom ANSI parser, soft keyboard, IME
- *
- * Controls:
- *   X        — open soft keyboard, type a line, press OK to send
- *   A        — send Enter (\r)
- *   B        — send Backspace (\x7f)
- *   D-pad    — arrow keys
- *   L        — Ctrl-C (interrupt)
- *   R        — Ctrl-D (EOF / logout)
- *   START    — disconnect and exit to HBL
+ * Single-threaded polling main loop. Memory budget for terminal+scrollback
+ * is ~512KB, plus ~580KB for font_data, plus libssh2/mbedtls — total well
+ * under 64MB default heap.
  */
 
 #include <stdio.h>
@@ -26,30 +20,36 @@
 #include <string.h>
 #include <malloc.h>
 #include <3ds.h>
+#include <citro2d.h>
 
 #include "ssh_client.h"
 #include "config.h"
+#include "terminal.h"
+#include "renderer.h"
+#include "keyboard.h"
 
 #define SOC_ALIGN       0x1000
-#define SOC_BUFFERSIZE  0x100000  /* 1 MB context for SOC service */
+#define SOC_BUFFERSIZE  0x100000
 
 #define CONFIG_PATH     "sdmc:/3ds/3dssh/config.ini"
 #define READ_BUFSZ      2048
-#define INPUT_BUFSZ     512
+
+#define BG_TOP          0x1e1e2eff
+#define BG_BOT          0x181825ff
+#define COLOR_OK        0xa6e3a1ff   /* green */
+#define COLOR_WARN      0xfab387ff   /* peach */
+#define COLOR_ERR       0xf38ba8ff   /* red */
+#define COLOR_FG        0xcdd6f4ff   /* default text */
+#define COLOR_DIM       0x6c7086ff   /* dim grey */
+#define COLOR_ACCENT    0x89b4faff   /* blue accent */
 
 static u32 *soc_buf = NULL;
 
 static int net_init(char *err, int err_sz) {
     soc_buf = (u32 *)memalign(SOC_ALIGN, SOC_BUFFERSIZE);
-    if (!soc_buf) {
-        snprintf(err, err_sz, "memalign failed");
-        return -1;
-    }
+    if (!soc_buf) { snprintf(err, err_sz, "memalign failed"); return -1; }
     int rc = socInit(soc_buf, SOC_BUFFERSIZE);
-    if (rc != 0) {
-        snprintf(err, err_sz, "socInit failed: 0x%08lX", (unsigned long)rc);
-        return -1;
-    }
+    if (rc != 0) { snprintf(err, err_sz, "socInit 0x%08lX", (unsigned long)rc); return -1; }
     return 0;
 }
 
@@ -70,133 +70,226 @@ static int prompt_swkbd(const char *hint, char *out, int out_sz) {
     return 1;
 }
 
+/* UTF-8 fragment buffer: SSH packet boundaries can split a multibyte char.
+ * Stash up to 3 trailing bytes for the next read. */
+static char utf8_frag[4];
+static int  utf8_frag_len = 0;
+
+static void feed_terminal(terminal_t *term, const char *raw, int raw_len) {
+    char buf[4 + READ_BUFSZ];
+    int total;
+    if (utf8_frag_len > 0) {
+        memcpy(buf, utf8_frag, utf8_frag_len);
+        memcpy(buf + utf8_frag_len, raw, raw_len);
+        total = utf8_frag_len + raw_len;
+        utf8_frag_len = 0;
+    } else {
+        memcpy(buf, raw, raw_len);
+        total = raw_len;
+    }
+    /* Detect a trailing incomplete UTF-8 sequence and stash it. */
+    int valid_end = total;
+    for (int j = total - 1; j >= total - 3 && j >= 0; j--) {
+        unsigned char b = (unsigned char)buf[j];
+        if (b >= 0xc0) {
+            int seq_len = (b < 0xe0) ? 2 : (b < 0xf0) ? 3 : 4;
+            if (total - j < seq_len) {
+                utf8_frag_len = total - j;
+                memcpy(utf8_frag, buf + j, utf8_frag_len);
+                valid_end = j;
+            }
+            break;
+        } else if (b < 0x80) {
+            break;  /* ASCII – no trailing fragment */
+        }
+    }
+    terminal_write_n(term, buf, valid_end);
+}
+
+/* Render the bottom-screen status panel. Must be called inside
+ * C2D_SceneBegin(bot). */
+static void draw_status(renderer_t *r, const ssh_config_t *cfg,
+                        const keyboard_t *kbd, terminal_t *term,
+                        const char *status_text, uint32_t status_color) {
+    char line[64];
+
+    /* Title bar */
+    renderer_draw_rect_cells(r, 0, 0, R_BOT_COLS, 1, 0x313244ff);
+    renderer_draw_text(r, 1, 0, "3dssh M3", COLOR_ACCENT);
+    snprintf(line, sizeof(line), "%s@%s", cfg->user, cfg->host);
+    renderer_draw_text(r, 12, 0, line, COLOR_FG);
+
+    /* Status line */
+    renderer_draw_text(r, 1, 2, status_text, status_color);
+
+    /* Modifier state */
+    snprintf(line, sizeof(line), "Sticky: %s   Scroll: %s",
+             keyboard_mod_label(kbd),
+             keyboard_in_scroll_mode(kbd) ? "ON " : "off");
+    renderer_draw_text(r, 1, 4, line,
+                       keyboard_in_scroll_mode(kbd) ? COLOR_ACCENT : COLOR_DIM);
+
+    /* Scrollback indicator */
+    if (term) {
+        snprintf(line, sizeof(line), "Scrollback: -%d/%d",
+                 term->sb_offset, term->sb_size);
+        renderer_draw_text(r, 1, 5, line, COLOR_DIM);
+    }
+
+    /* Key legend */
+    renderer_draw_text(r, 1,  8, "KEY LEGEND", COLOR_ACCENT);
+    renderer_draw_text(r, 1,  9, "  A    Enter        D-pad arrows", COLOR_FG);
+    renderer_draw_text(r, 1, 10, "  B    Backspace    L+key Ctrl-key", COLOR_FG);
+    renderer_draw_text(r, 1, 11, "  X    type (swkbd) SELECT sticky-Ctrl", COLOR_FG);
+    renderer_draw_text(r, 1, 12, "  Y    scroll mode  Stick: scroll", COLOR_FG);
+    renderer_draw_text(r, 1, 13, "  STRT quit                       ", COLOR_FG);
+
+    renderer_draw_text(r, 1, 16, "M4 will replace this with a touch keyboard.",
+                       COLOR_DIM);
+}
+
 int main(int argc, char *argv[]) {
-    PrintConsole topScreen, bottomScreen;
-    gfxInitDefault();
-    consoleInit(GFX_TOP,    &topScreen);
-    consoleInit(GFX_BOTTOM, &bottomScreen);
-
-    consoleSelect(&bottomScreen);
-    printf("\x1b[2J\x1b[H3dssh M1\n");
-    printf("--------\n");
-    printf("X: type   A: Enter   B: BS\n");
-    printf("D-pad: arrows  L: ^C  R: ^D\n");
-    printf("START: quit\n\n");
-
     char err[256] = {0};
+    char status_buf[80] = "starting...";
+    uint32_t status_color = COLOR_WARN;
+    ssh_client_t *ssh = NULL;       /* declared up here so goto idle_loop is safe */
+
+    /* Graphics + citro2d setup. */
+    gfxInitDefault();
+    C3D_Init(C3D_DEFAULT_CMDBUF_SIZE);
+    C2D_Init(32768);
+    C2D_Prepare();
+    C3D_RenderTarget *top = C2D_CreateScreenTarget(GFX_TOP,    GFX_LEFT);
+    C3D_RenderTarget *bot = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
 
     /* Load config from SD. */
     ssh_config_t cfg;
     int loaded = config_load(&cfg, CONFIG_PATH);
-    printf("config: %s\n", loaded ? "loaded from SD" : "DEFAULTS (no SD config)");
-    printf("  host: %s:%d\n", cfg.host, cfg.port);
-    printf("  user: %s\n", cfg.user);
-    printf("  key:  %s\n", cfg.key_path);
+    snprintf(status_buf, sizeof(status_buf),
+             loaded ? "config: SD" : "config: defaults (no SD config)");
 
-    /* Init network. */
+    /* Sub-systems. */
+    terminal_t *term = terminal_init(R_TOP_COLS, R_TOP_ROWS);
+    renderer_t *r    = renderer_init(top, bot);
+    keyboard_t *kbd  = keyboard_init();
+    if (!term || !r || !kbd) goto cleanup;
+
     if (net_init(err, sizeof(err)) != 0) {
-        printf("\nNET ERROR: %s\n", err);
-        printf("Press START to exit.\n");
-        while (aptMainLoop()) {
-            hidScanInput();
-            if (hidKeysDown() & KEY_START) break;
-            gspWaitForVBlank();
-        }
-        gfxExit();
-        return 1;
+        snprintf(status_buf, sizeof(status_buf), "net err: %s", err);
+        status_color = COLOR_ERR;
+        goto idle_loop;
     }
-    printf("\nnet: OK\n");
 
-    /* Connect. */
-    printf("connecting (this can take 5-10 sec)...\n");
-    gfxFlushBuffers();
-    gfxSwapBuffers();
-    gspWaitForVBlank();
+    /* Banner inside the terminal. */
+    {
+        char banner[160];
+        snprintf(banner, sizeof(banner),
+                 "\x1b[36m3dssh M3\x1b[0m connecting to "
+                 "\x1b[33m%s@%s:%d\x1b[0m...\r\n",
+                 cfg.user, cfg.host, cfg.port);
+        terminal_write(term, banner);
+    }
+    snprintf(status_buf, sizeof(status_buf), "connecting...");
 
-    ssh_client_t *ssh = ssh_connect_pubkey(
+    /* Pump one frame so the user sees the banner before the (synchronous,
+     * 5-10s) RSA handshake blocks the main loop. */
+    {
+        C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+        C2D_TargetClear(top, C2D_Color32(0x1e, 0x1e, 0x2e, 0xff));
+        C2D_SceneBegin(top);
+        renderer_draw_terminal(r, term);
+        C2D_TargetClear(bot, C2D_Color32(0x18, 0x18, 0x25, 0xff));
+        C2D_SceneBegin(bot);
+        draw_status(r, &cfg, kbd, term, status_buf, status_color);
+        C3D_FrameEnd(0);
+    }
+
+    ssh = ssh_connect_pubkey(
         cfg.host, cfg.port, cfg.user,
         cfg.key_path, NULL,
         cfg.passphrase[0] ? cfg.passphrase : NULL,
         err, sizeof(err));
 
     if (!ssh) {
-        printf("\nSSH ERROR:\n%s\n", err);
-        printf("\n--- legend ---\n");
-        printf("fn=N: function return\n");
-        printf("sess=N: libssh2_last_error\n");
-        printf("       0=NONE -16=AUTH_FAIL\n");
-        printf("       -18=ALLOC -19=PUBKEY_UNVERIFIED\n");
-        printf("\nPress START to exit.\n");
+        char line[256];
+        snprintf(line, sizeof(line), "\x1b[31mSSH error:\x1b[0m %s\r\n", err);
+        terminal_write(term, line);
+        snprintf(status_buf, sizeof(status_buf), "ssh err");
+        status_color = COLOR_ERR;
+    } else {
+        terminal_write(term, "\x1b[32mconnected.\x1b[0m\r\n");
+        ssh_set_pty_size(ssh, R_TOP_COLS, R_TOP_ROWS);
+        snprintf(status_buf, sizeof(status_buf), "connected %s:%d",
+                 cfg.host, cfg.port);
+        status_color = COLOR_OK;
+    }
+
+idle_loop:
+    {
+        char rbuf[READ_BUFSZ];
+        char ibuf[256];
+
         while (aptMainLoop()) {
             hidScanInput();
-            if (hidKeysDown() & KEY_START) break;
-            gspWaitForVBlank();
-        }
-        net_fini();
-        gfxExit();
-        return 2;
-    }
+            u32 down = hidKeysDown();
+            u32 held = hidKeysHeld();
+            circlePosition cpad;
+            hidCircleRead(&cpad);
 
-    printf("connected!\n");
-    /* Top screen now shows the SSH session. Initial cols/rows match top
-     * screen console: 50 cols x 30 rows. */
-    ssh_set_pty_size(ssh, 50, 30);
-    consoleSelect(&topScreen);
-    printf("\x1b[2J\x1b[H");
+            if (down & KEY_START) break;
 
-    char rbuf[READ_BUFSZ];
-    char ibuf[INPUT_BUFSZ];
-
-    while (aptMainLoop() && ssh_is_connected(ssh)) {
-        /* Pump SSH read into top-screen console. */
-        int n = ssh_read(ssh, rbuf, sizeof(rbuf) - 1);
-        if (n > 0) {
-            rbuf[n] = 0;
-            /* fwrite would be cleaner but PrintConsole's fputs/printf both work. */
-            fwrite(rbuf, 1, (size_t)n, stdout);
-            fflush(stdout);
-        } else if (n < 0) {
-            break;
-        }
-
-        hidScanInput();
-        u32 down = hidKeysDown();
-        if (down & KEY_START) break;
-        if (down & KEY_A)     ssh_write(ssh, "\r",     1);
-        if (down & KEY_B)     ssh_write(ssh, "\x7f",   1);
-        if (down & KEY_DUP)   ssh_write(ssh, "\x1b[A", 3);
-        if (down & KEY_DDOWN) ssh_write(ssh, "\x1b[B", 3);
-        if (down & KEY_DRIGHT)ssh_write(ssh, "\x1b[C", 3);
-        if (down & KEY_DLEFT) ssh_write(ssh, "\x1b[D", 3);
-        if (down & KEY_L)     ssh_write(ssh, "\x03",   1); /* Ctrl-C */
-        if (down & KEY_R)     ssh_write(ssh, "\x04",   1); /* Ctrl-D */
-        if (down & KEY_X) {
-            consoleSelect(&bottomScreen);
-            if (prompt_swkbd("type a line", ibuf, sizeof(ibuf))) {
-                int ilen = (int)strlen(ibuf);
-                if (ilen > 0) ssh_write(ssh, ibuf, ilen);
+            /* SSH receive */
+            if (ssh && ssh_is_connected(ssh)) {
+                int n = ssh_read(ssh, rbuf, sizeof(rbuf));
+                if (n > 0) {
+                    feed_terminal(term, rbuf, n);
+                } else if (n < 0) {
+                    terminal_write(term, "\r\n\x1b[31m[disconnected]\x1b[0m\r\n");
+                    ssh_disconnect(ssh);
+                    ssh = NULL;
+                    snprintf(status_buf, sizeof(status_buf), "disconnected");
+                    status_color = COLOR_WARN;
+                }
             }
-            consoleSelect(&topScreen);
+
+            /* Physical key input */
+            const char *out = keyboard_handle_input(kbd, term, down, held, cpad.dy);
+            if (out && ssh && ssh_is_connected(ssh)) {
+                ssh_write(ssh, out, (int)strlen(out));
+            }
+
+            /* X = pop swkbd for free-form text entry (replaced in M4). */
+            if ((down & KEY_X) && ssh && ssh_is_connected(ssh)) {
+                if (prompt_swkbd("type a line", ibuf, sizeof(ibuf))) {
+                    int n = (int)strlen(ibuf);
+                    if (n > 0) {
+                        terminal_scroll_view(term, -term->sb_offset);
+                        ssh_write(ssh, ibuf, n);
+                    }
+                }
+            }
+
+            /* Render */
+            C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+            C2D_TargetClear(top, C2D_Color32(0x1e, 0x1e, 0x2e, 0xff));
+            C2D_SceneBegin(top);
+            renderer_draw_terminal(r, term);
+            C2D_TargetClear(bot, C2D_Color32(0x18, 0x18, 0x25, 0xff));
+            C2D_SceneBegin(bot);
+            draw_status(r, &cfg, kbd, term, status_buf, status_color);
+            C3D_FrameEnd(0);
         }
 
-        gfxFlushBuffers();
-        gfxSwapBuffers();
-        gspWaitForVBlank();
+        if (ssh) ssh_disconnect(ssh);
     }
-
-    consoleSelect(&bottomScreen);
-    printf("\ndisconnecting...\n");
-    ssh_disconnect(ssh);
     net_fini();
-    printf("press START to exit.\n");
 
-    while (aptMainLoop()) {
-        hidScanInput();
-        if (hidKeysDown() & KEY_START) break;
-        gspWaitForVBlank();
-        gfxSwapBuffers();
-    }
-
+cleanup:
+    if (kbd)  keyboard_free(kbd);
+    if (r)    renderer_free(r);
+    if (term) terminal_free(term);
+    C2D_Fini();
+    C3D_Fini();
     gfxExit();
     return 0;
 }
