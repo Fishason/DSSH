@@ -81,21 +81,27 @@ const char *keyboard_handle_input(keyboard_t *kbd,
      *   (b) No mouse tracking: scroll our local 500-row scrollback buffer.
      *       Convenience for non-tmux output (e.g. `cat largefile`).
      *
-     * Either way we throttle to ~12 ticks/sec so a sustained stick push
-     * doesn't flood. */
-    if ((circle_dy > 50 || circle_dy < -50)) {
+     * Throttled to ~12 ticks/sec so a sustained stick push doesn't flood.
+     *
+     * IMPORTANT: we used to early-return NULL whenever the stick was past
+     * its deadband.  3DS Circle Pads commonly drift slightly so dy can
+     * sit at 60+ when "neutral", which silently swallowed every B/A/D-pad
+     * press while the stick was off-center.  Now we only return early if
+     * we actually emit a wheel event (path a); otherwise we fall through
+     * so other key handlers below still run. */
+    int scroll_active = (circle_dy > 50 || circle_dy < -50);
+    if (scroll_active) {
         if (++kbd->scroll_timer >= 5) {
             kbd->scroll_timer = 0;
             if (term && term->mouse_proto && term->mouse_sgr) {
-                /* Encode wheel button (64=up, 65=down) at fake col/row 1,1.
-                 * tmux only cares that *some* mouse event arrived. */
+                /* Wheel: button 64 = up, 65 = down at fake col/row 1,1. */
                 return emit(kbd, circle_dy > 0
                             ? "\x1b[<64;1;1M"
                             : "\x1b[<65;1;1M");
             }
             if (term) terminal_scroll_view(term, circle_dy > 0 ? 1 : -1);
         }
-        return NULL;
+        /* don't `return NULL` — other key handlers below should still run. */
     } else {
         kbd->scroll_timer = 0;
     }

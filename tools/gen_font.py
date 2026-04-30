@@ -27,17 +27,11 @@ import glob
 from PIL import Image, ImageDraw, ImageFont
 
 CELL_W = 6
-CELL_H = 10                  # was 12; new layout is 66 cols × 24 rows
-CELL_W2 = CELL_W * 2  # wide-cell width 12px
+CELL_H = 12   # native design size of both Terminus and Zpix.  See font_atlas.h.
+CELL_W2 = CELL_W * 2
 THRESHOLD = 80
 
-# Wide font size used to render CJK glyphs.  Was 12 (Zpix native), but
-# rendering at 12 then clipping to CELL_H=10 left CJK ink extending all
-# the way to row 0 and row 9, while ASCII (Terminus 10pt) only used rows
-# 1-7 — visually CJK looked taller / "sunk lower" than ASCII on the same
-# line.  Loading Zpix at 10pt makes its ink height match Terminus's, so
-# baselines align cleanly.  Slight loss of pixel-art crispness for CJK.
-WIDE_FONT_NATIVE = 10
+WIDE_FONT_NATIVE = 12  # match CELL_H — Zpix is pixel-perfect at exactly 12px.
 
 
 # ── narrow glyph map ─────────────────────────────────────────
