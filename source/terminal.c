@@ -11,6 +11,7 @@
 #define STATE_ESC    1
 #define STATE_CSI    2
 #define STATE_OSC    3
+#define STATE_SCS    4   /* waiting for charset designator after ESC ( ) * + */
 
 static void cell_reset(term_cell_t *c) {
     c->codepoint = ' ';
@@ -393,6 +394,20 @@ void terminal_write_n(terminal_t *t, const char *data, int len) {
             switch (c) {
                 case '[': t->parse_state=STATE_CSI; t->parse_len=0; t->parse_buf[0]='\0'; break;
                 case ']': t->parse_state=STATE_OSC; t->parse_len=0; break;
+                /* SCS - Select Character Set: ESC ( <C>, ESC ) <C>,
+                 * ESC * <C>, ESC + <C> designate G0/G1/G2/G3.  We don't
+                 * actually track multiple charsets (UTF-8 / ASCII only),
+                 * so we just consume the next byte (the charset
+                 * designator like 'B' for ASCII or '0' for DEC graphics)
+                 * to keep it from being interpreted as a literal char.
+                 *
+                 * This was the cause of the "B trail" in Claude Code:
+                 * tmux/Ink redraws repeatedly emit `ESC ( B`; if we
+                 * didn't recognize this as a 2-byte sequence the 'B'
+                 * landed on the screen as a literal character. */
+                case '(': case ')': case '*': case '+':
+                    t->parse_state = STATE_SCS;
+                    break;
                 case 'c': terminal_reset(t); t->parse_state=STATE_NORMAL; break;
                 case '7': /* save cursor */
                     t->saved_x=t->cur_x; t->saved_y=t->cur_y;
@@ -412,6 +427,13 @@ void terminal_write_n(terminal_t *t, const char *data, int len) {
                     t->cur_x=0; newline(t); t->parse_state=STATE_NORMAL; break;
                 default:  t->parse_state=STATE_NORMAL; break;
             }
+            i++; continue;
+        }
+
+        if (t->parse_state == STATE_SCS) {
+            /* Swallow the charset designator byte (B, 0, A, K, ...) and
+             * return to normal mode.  We don't switch fonts — UTF-8 only. */
+            t->parse_state = STATE_NORMAL;
             i++; continue;
         }
 
