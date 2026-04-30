@@ -229,28 +229,45 @@ def render_rows(cp, fnt, w, h):
     return render_rows_baseline(cp, fnt, w, h)
 
 
-# Detect Terminus' "not-defined" placeholder so we treat it as empty and fall
-# back to a different font.
-notdef_rows = render_rows_baseline(0xFFFF, font_narrow, CELL_W, CELL_H)
+# Each font has its own ".notdef" placeholder glyph (the rectangle frame
+# Pillow renders for chars the font doesn't actually have).  Terminus's
+# notdef is 5px wide, DejaVu's is 6px — different bitmaps but both mean
+# "this font doesn't have this glyph".  Render 0xFFFF (which no font has)
+# through each font's actual rendering path to capture its specific
+# notdef pattern, then treat any glyph that exactly matches as missing.
+notdef_terminus = render_rows_baseline(0xFFFF, font_narrow, CELL_W, CELL_H)
+notdef_dejavu   = render_rows_centered(0xFFFF, font_symbols, CELL_W, CELL_H) if font_symbols else None
+notdef_zpix     = render_rows_centered(0xFFFF, font_wide,    CELL_W, CELL_H) if font_wide    else None
 
 
-def is_empty_or_notdef(rows):
-    return all(b == 0 for b in rows) or rows == notdef_rows
+def is_empty_or_notdef(rows, font_notdef):
+    """Empty bitmap, or exactly equal to this font's own notdef glyph.
+    No heuristic — heuristics misfired and dropped legit chars like H, O,
+    [, ] whose silhouette can vaguely resemble a rectangle frame."""
+    if all(b == 0 for b in rows):
+        return True
+    if font_notdef is not None and rows == font_notdef:
+        return True
+    return False
 
 
 # ── narrow glyph generation ────────────────────────────────────
-# Fallback chain:
-#   Terminus baseline-anchored (perfect for ASCII + box-draw, monospace)
-#   -> DejaVu ink-centered (fallback for symbols/arrows)
-#   -> Zpix ink-centered (geometric shapes ○●■□▲▼)
+# Fallback chain (each step rejects per-font notdef + empty):
+#   Terminus baseline-anchored  (ASCII / box-draw — Terminus's strong area)
+#   -> DejaVu ink-centered      (broader symbol coverage)
+#   -> Zpix ink-centered        (geometric shapes ○●■□▲▼)
+# If all three return notdef, drop from CHAR_MAP so the C-side
+# fallback_alias() in font_atlas.c can substitute a similar glyph.
 glyph_bitmaps = [[0] * CELL_H for _ in range(NGLYPHS)]
 empty_cps = set()
 for cp, atlas_idx in CHAR_MAP.items():
     rows = render_rows_baseline(cp, font_narrow, CELL_W, CELL_H)
-    if cp > 0x7E and is_empty_or_notdef(rows) and font_symbols is not None:
+    if cp > 0x7E and is_empty_or_notdef(rows, notdef_terminus) and font_symbols is not None:
         rows = render_rows_centered(cp, font_symbols, CELL_W, CELL_H)
-    if cp > 0x7E and all(b == 0 for b in rows) and font_wide is not None:
-        rows = render_rows_centered(cp, font_wide, CELL_W, CELL_H)
+        if is_empty_or_notdef(rows, notdef_dejavu) and font_wide is not None:
+            rows = render_rows_centered(cp, font_wide, CELL_W, CELL_H)
+            if is_empty_or_notdef(rows, notdef_zpix):
+                rows = [0] * CELL_H  # all three failed -> mark empty
     if all(b == 0 for b in rows) and cp > 0x7E:
         empty_cps.add(cp)
     else:
