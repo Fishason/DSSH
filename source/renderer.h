@@ -30,6 +30,11 @@ void        renderer_draw_terminal(renderer_t *r, terminal_t *term);
 void renderer_draw_text(renderer_t *r, int x_cells, int y_cells,
                         const char *text, uint32_t rgba);
 
+/* Pixel-precise version — draws each glyph at exact pixel coords.  Use
+ * this when cell-grid rounding would mis-center labels (e.g. a 32 px
+ * key cannot be exactly centered on a 6 px cell grid). */
+void renderer_draw_text_px(int px, int py, const char *text, uint32_t rgba);
+
 /* Filled rect on bottom screen, cell-aligned. */
 void renderer_draw_rect_cells(renderer_t *r, int x_cells, int y_cells,
                               int w_cells, int h_cells, uint32_t rgba);

@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <malloc.h>
 #include <3ds.h>
 #include <citro2d.h>
@@ -27,7 +28,7 @@
 #include "renderer.h"
 #include "keyboard.h"
 #include "softkb.h"
-#include "audio.h"
+#include "mascot.h"
 
 #define SOC_ALIGN       0x1000
 #define SOC_BUFFERSIZE  0x100000
@@ -111,12 +112,11 @@ int main(int argc, char *argv[]) {
     uint32_t status_color = COLOR_WARN;
     ssh_client_t *ssh = NULL;
 
-    /* ── Graphics + audio init ── */
+    /* ── Graphics init (audio disabled — see audio.{c,h} kept for future) ── */
     gfxInitDefault();
     C3D_Init(C3D_DEFAULT_CMDBUF_SIZE);
     C2D_Init(32768);
     C2D_Prepare();
-    audio_init();   /* safe to call regardless of dsp firmware status */
     C3D_RenderTarget *top = C2D_CreateScreenTarget(GFX_TOP,    GFX_LEFT);
     C3D_RenderTarget *bot = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
 
@@ -126,12 +126,19 @@ int main(int argc, char *argv[]) {
     snprintf(status_buf, sizeof(status_buf),
              loaded ? "config: SD" : "config: defaults");
 
+    /* Seed RNG so the mascot's idle/walk transitions don't repeat across
+     * runs.  time(NULL) is fine — we don't need cryptographic randomness. */
+    srand((unsigned)time(NULL));
+
     /* ── Sub-systems ── */
     terminal_t *term = terminal_init(R_TOP_COLS, R_TOP_ROWS);
     renderer_t *r    = renderer_init(top, bot);
     keyboard_t *kbd  = keyboard_init();
     softkb_t   *kb   = softkb_init();
-    if (!term || !r || !kbd || !kb) goto cleanup;
+    /* Mascot lives in the bottom row (y=214..239).  Clock occupies
+     * x=2..67 on the left, mascot scampers in x=72..302 on the right. */
+    mascot_t   *mc   = mascot_init(72, 302, 216);
+    if (!term || !r || !kbd || !kb || !mc) goto cleanup;
 
     if (net_init(err, sizeof(err)) != 0) {
         snprintf(status_buf, sizeof(status_buf), "net err: %s", err);
@@ -220,17 +227,25 @@ idle_loop:
                 hidTouchRead(&tp);
                 tx = tp.px; ty = tp.py;
             }
-            /* Fire only on the down-edge so a single tap = one event;
-             * pass tx/ty regardless of edge so the press visualization
-             * tracks the held state. */
             int touch_down = (down & KEY_TOUCH) ? 1 : 0;
-            const char *kt = softkb_touch(kb, kbd, tx, ty, touch_down);
-            if (kt) send_to_ssh(ssh, term, kt, (int)strlen(kt));
-            /* Also call once per frame with pressed=0 to advance the
-             * release-fade timer when the touch is no longer held. */
+
+            /* Bottom row (y >= 214) belongs to mascot — taps there don't
+             * reach softkb.  On the down-edge we hit-test the crab; if
+             * it's where the finger lands the crab flees. */
+            if (touch_down && ty >= 214) {
+                if (mascot_hit_test(mc, tx, ty))
+                    mascot_on_touched(mc, tx);
+            } else {
+                const char *kt = softkb_touch(kb, kbd, tx, ty, touch_down);
+                if (kt) send_to_ssh(ssh, term, kt, (int)strlen(kt));
+            }
+            /* Always advance the softkb release-fade timer on no-touch frames. */
             if (!touch_pressed) {
                 softkb_touch(kb, kbd, -1, -1, 0);
             }
+
+            /* Mascot ticks once per frame regardless of input. */
+            mascot_update(mc);
 
             /* ── Render ── */
             C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
@@ -242,6 +257,23 @@ idle_loop:
             C2D_SceneBegin(bot);
             softkb_draw(kb, r, kbd);
 
+            /* Bottom row: clock on the left, mascot on the right.
+             * Both live at y=214..239 below softkb's last key row. */
+            {
+                char clock_buf[24];
+                time_t now = time(NULL);
+                struct tm lt;
+                localtime_r(&now, &lt);
+                snprintf(clock_buf, sizeof(clock_buf),
+                         "%02d-%02d %02d:%02d",
+                         lt.tm_mon + 1, lt.tm_mday,
+                         lt.tm_hour, lt.tm_min);
+                /* Vertically center 12-px text in the 26-px bottom row:
+                 * y = 214 + (26-12)/2 = 221. */
+                renderer_draw_text_px(2, 221, clock_buf, COLOR_DIM);
+            }
+            mascot_draw(mc);
+
             C3D_FrameEnd(0);
         }
 
@@ -250,11 +282,11 @@ idle_loop:
     net_fini();
 
 cleanup:
+    if (mc)   mascot_free(mc);
     if (kb)   softkb_free(kb);
     if (kbd)  keyboard_free(kbd);
     if (r)    renderer_free(r);
     if (term) terminal_free(term);
-    audio_exit();
     C2D_Fini();
     C3D_Fini();
     gfxExit();

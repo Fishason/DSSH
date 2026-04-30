@@ -151,6 +151,18 @@ void renderer_draw_text(renderer_t *r, int x_cells, int y_cells,
     }
 }
 
+void renderer_draw_text_px(int px, int py, const char *text, uint32_t rgba) {
+    if (!text) return;
+    u32 color = rgba_to_c2d(rgba);
+    float fx = (float)px;
+    float fy = (float)py;
+    for (const char *s = text; *s; s++) {
+        unsigned char c = (unsigned char)*s;
+        draw_glyph(fx, fy, 0.5f, font_glyph_index(c), color);
+        fx += FONT_CELL_W;
+    }
+}
+
 void renderer_draw_rect_cells(renderer_t *r, int x_cells, int y_cells,
                               int w_cells, int h_cells, uint32_t rgba) {
     (void)r;

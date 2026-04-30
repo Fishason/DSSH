@@ -1,7 +1,6 @@
 #include "softkb.h"
 #include "renderer.h"
 #include "keyboard.h"
-#include "audio.h"
 #include <citro2d.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,14 +9,17 @@
 /* ──────────────────────────────────────────────────────────────────────
  * Geometry — bottom screen 320×240, top-left = (0,0)
  * ──────────────────────────────────────────────────────────────────────
- *  y =  0 .. 29   status / candidate row (30 px — taller than M4-first
- *                  for the IME candidate strip in M7)
- *  y = 30 .. 31   margin
- *  y = 32 .. 75   key row 0 (44 px)
- *  y = 77 .. 120  key row 1
- *  y = 122 .. 165 key row 2
- *  y = 167 .. 210 key row 3
- *  y = 211..239   bottom margin (29 px)
+ *  y =  0 .. 33   status / candidate row (34 px — bumped from 30 in
+ *                  M4 polish so IME candidates have more vertical room)
+ *  y = 34 .. 35   margin
+ *  y = 36 .. 78   key row 0 (43 px — 1 px shaved from M4-first to free
+ *                  space for the bottom row at y=214..239)
+ *  y = 81 .. 123  key row 1
+ *  y = 126 .. 168 key row 2
+ *  y = 171 .. 213 key row 3
+ *  y = 214..239   bottom row owned by main.c — clock on the left,
+ *                  Anthropic crab mascot on the right.  softkb does NOT
+ *                  draw here.
  *
  *  Stagger (mimics PC keyboards: each row is offset by ~half a key):
  *    row 0: x offset =  0   (10 keys × 32 px = 320 — exact fit)
@@ -35,9 +37,9 @@
  */
 
 #define KEY_W       32
-#define KEY_H       44
+#define KEY_H       43
 #define KEY_GAP_Y   2
-#define ROW_BASE_Y  32
+#define ROW_BASE_Y  36
 #define ROW_Y(r)    (ROW_BASE_Y + (r) * (KEY_H + KEY_GAP_Y))
 
 #define ROW_X_0     0
@@ -46,7 +48,7 @@
 #define ROW_X_3     0
 
 #define STATUS_Y    0
-#define STATUS_H    30
+#define STATUS_H    34
 #define CELL_W      6
 #define CELL_H      12
 
@@ -217,7 +219,6 @@ const char *softkb_touch(softkb_t *kb,
     }
     kb->pressed_idx    = idx;
     kb->pressed_frames = 0;
-    audio_play_click();   /* tactile audio feedback on every soft-kb tap */
 
     int n;
     const softkey_t *layout = current_layout(kb, &n);
@@ -281,8 +282,10 @@ static void draw_key_button(int x, int y, int w, int h,
     }
 }
 
-/* Centered text label.  Note: renderer_draw_text takes cell-grid coords,
- * so we approximate centering by computing the closest cell offset. */
+/* Centered text label.  Uses pixel-precise renderer_draw_text_px so
+ * 1-2 char labels in 32 px wide keys land on their true centers — the
+ * old cell-grid path snapped to multiples of 6 px and produced visible
+ * left-bias on every key. */
 static void draw_label(int rx, int ry, int rw, int rh,
                        const char *text, u32 fg_rgba, int pressed) {
     if (!text) return;
@@ -290,9 +293,7 @@ static void draw_label(int rx, int ry, int rw, int rh,
     int tw   = tlen * CELL_W;
     int x0   = rx + (rw - tw) / 2;
     int y0   = ry + (rh - CELL_H) / 2 + (pressed ? 1 : 0);
-    int cx   = x0 / CELL_W;
-    int cy   = y0 / CELL_H;
-    renderer_draw_text(NULL, cx, cy, text, fg_rgba);
+    renderer_draw_text_px(x0, y0, text, fg_rgba);
 }
 
 /* Decide the body fill color for a key based on its kind and press state. */
@@ -316,39 +317,61 @@ static uint32_t key_label_color(const softkey_t *k, int is_pressed) {
 
 /* ── status / candidate row ─────────────────────────────────────────── */
 
+/* Layout (left → right):
+ *   [2..2+slot_w]              left slot  (status indicator)
+ *   [slot_w+6..320-slot_w-8]   candidate strip
+ *   [320-slot_w-2..318]        right slot (mode badge)
+ *
+ * slot_w = 3 chars * 6 px + 4 px padding = 22 px.
+ * slot_h = STATUS_H - 4 (2 px top/bot margin).
+ *
+ * All labels rendered with renderer_draw_text_px so 3-char labels land
+ * exactly on their geometric centers, no cell-grid snapping. */
 static void draw_status_row(renderer_t *r, const keyboard_t *kbd) {
-    /* Status row band */
+    const int slot_w = 3 * CELL_W + 4;     /* 22 px */
+    const int slot_h = STATUS_H - 4;
+    const int slot_y = 2;
+    const int label_tw = 3 * CELL_W;       /* 18 px */
+    const int label_y  = slot_y + (slot_h - CELL_H) / 2;
+
+    /* Status row band (full width). */
     C2D_DrawRectSolid(0, 0, 0.05f, 320, STATUS_H,
                       rgba_to_c2d_(COL_STATUS_BG));
-    /* Candidate area background (between [STA] and mode badge) */
-    C2D_DrawRectSolid(3 * CELL_W + 4, 4, 0.06f,
-                      320 - 3 * CELL_W - 4 - 3 * CELL_W - 8, STATUS_H - 8,
+
+    /* Candidate strip between the two slots. */
+    C2D_DrawRectSolid((float)(slot_w + 6), (float)slot_y, 0.06f,
+                      (float)(320 - 2 * slot_w - 12), (float)slot_h,
                       rgba_to_c2d_(COL_CANDIDATE_BG));
 
-    /* [STA] indicator slot — 3 cells wide on the very left */
+    /* ── Left slot: status indicator ─────────────────────────────────── */
     const char *status = kbd ? keyboard_status_label(kbd) : "   ";
     int active = (status && strcmp(status, "   ") != 0);
-    if (active) {
-        C2D_DrawRectSolid(2, 2, 0.07f,
-                          3 * CELL_W + 4, STATUS_H - 4,
-                          rgba_to_c2d_(COL_STATUS_HOLD_BG));
-    }
-    int label_color = active ? COL_STATUS_FG_HOLD : COL_STATUS_DIM;
-    /* Center the 3-char label vertically in the 30 px status row.
-     * status is at row 0 (cell-grid Y), but the area starts at y=0.
-     * Cell row 1 puts the text at y=12. With 30 px row, we want y≈9
-     * so 1 cell row down (12) is close enough. */
-    renderer_draw_text(r, 1, 1, status, label_color);
 
-    /* Mode badge on the very right */
-    ime_mode_t m = kbd ? keyboard_get_mode(kbd) : MODE_EN;
-    const char *mode_label = (m == MODE_CN) ? " CN" : " EN";
-    u32 mode_color = (m == MODE_CN) ? COL_MODE_CN : COL_MODE_EN;
-    /* Background pill behind the mode label */
-    C2D_DrawRectSolid(320 - (3 * CELL_W + 6), 2, 0.07f,
-                      3 * CELL_W + 4, STATUS_H - 4,
+    /* Always-drawn slot bg keeps the layout visually anchored. */
+    C2D_DrawRectSolid(2, (float)slot_y, 0.07f,
+                      (float)slot_w, (float)slot_h,
                       rgba_to_c2d_(COL_MODE_LBL_BG));
-    renderer_draw_text(r, 53 - 3, 1, mode_label, mode_color);
+    if (active) {
+        /* Highlight overlay: faint blue tint behind the active label. */
+        C2D_DrawRectSolid(2, (float)slot_y, 0.072f,
+                          (float)slot_w, (float)slot_h,
+                          rgba_to_c2d_(COL_STATUS_HOLD_BG));
+        int x0 = 2 + (slot_w - label_tw) / 2;
+        renderer_draw_text_px(x0, label_y, status, COL_STATUS_FG_HOLD);
+    }
+
+    /* ── Right slot: 3-char mode badge "ENG"/"CHN" ───────────────────── */
+    ime_mode_t m = kbd ? keyboard_get_mode(kbd) : MODE_EN;
+    const char *mode_label = (m == MODE_CN) ? "CHN" : "ENG";
+    uint32_t mode_color    = (m == MODE_CN) ? COL_MODE_CN : COL_MODE_EN;
+    int rx = 320 - slot_w - 2;
+    C2D_DrawRectSolid((float)rx, (float)slot_y, 0.07f,
+                      (float)slot_w, (float)slot_h,
+                      rgba_to_c2d_(COL_MODE_LBL_BG));
+    int mx = rx + (slot_w - label_tw) / 2;
+    renderer_draw_text_px(mx, label_y, mode_label, mode_color);
+
+    (void)r;  /* unused with the px path */
 }
 
 /* ── public draw ───────────────────────────────────────────────────── */
