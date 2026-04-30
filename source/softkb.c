@@ -164,6 +164,17 @@ struct softkb_t {
     int           pressed_frames;  /* visual press-down animation timer */
     char          out_buf[16];
     int           out_len;
+
+    /* Debug page state */
+    int           debug_mode;            /* 0 = keyboard, 1 = debug overlay */
+    int           badge_last_tap_frame;  /* kbd->frame at last badge tap */
+    int           mascot_enabled;        /* 1 = crab visible (default) */
+
+    /* Recv ring — last up to 32 SSH-bound bytes for debug display.
+     * recv_head is the next write slot; recv_count saturates at 32. */
+    uint8_t       recv_ring[32];
+    int           recv_head;
+    int           recv_count;
 };
 
 softkb_t *softkb_init(void) {
@@ -171,6 +182,10 @@ softkb_t *softkb_init(void) {
     if (!kb) return NULL;
     kb->page = PAGE_LETTERS;
     kb->pressed_idx = -1;
+    kb->mascot_enabled = 1;
+    /* Far-past sentinel so the very first badge tap can never look
+     * like the second half of a double-tap. */
+    kb->badge_last_tap_frame = -1000;
     return kb;
 }
 
@@ -178,6 +193,50 @@ void softkb_free(softkb_t *kb) { free(kb); }
 
 softkb_page_t softkb_current_page(const softkb_t *kb) {
     return kb ? kb->page : PAGE_LETTERS;
+}
+
+void softkb_record_recv(softkb_t *kb, const char *bytes, int n) {
+    if (!kb || !bytes || n <= 0) return;
+    for (int i = 0; i < n; i++) {
+        kb->recv_ring[kb->recv_head] = (uint8_t)bytes[i];
+        kb->recv_head = (kb->recv_head + 1) % 32;
+        if (kb->recv_count < 32) kb->recv_count++;
+    }
+}
+
+int softkb_in_debug(const softkb_t *kb) {
+    return kb ? kb->debug_mode : 0;
+}
+
+int softkb_mascot_enabled(const softkb_t *kb) {
+    return kb ? kb->mascot_enabled : 1;
+}
+
+/* ── Hit-test geometry for the right-side ENG/CHN badge and the
+ *    debug page's mascot toggle button.  Mirrors the layout in
+ *    draw_status_row / draw_debug_screen so a tap maps 1:1. */
+#define BADGE_W       (3 * CELL_W + 4)        /* 22 px — same as slot_w */
+#define BADGE_H       (STATUS_H - 4)          /* 30 px — same as slot_h */
+#define BADGE_X       (320 - BADGE_W - 2)     /* 296 */
+#define BADGE_Y       2
+
+#define DBG_TOGGLE_X  60
+#define DBG_TOGGLE_Y  170
+#define DBG_TOGGLE_W  200
+#define DBG_TOGGLE_H  40
+
+/* Number of frames that count as a "double" tap on the badge.
+ * 30 frames ≈ 500 ms at 60 fps — matches iOS double-tap window. */
+#define BADGE_DOUBLE_TAP_FRAMES 30
+
+static int badge_hit(int tx, int ty) {
+    return tx >= BADGE_X && tx < BADGE_X + BADGE_W &&
+           ty >= BADGE_Y && ty < BADGE_Y + BADGE_H;
+}
+
+static int dbg_toggle_hit(int tx, int ty) {
+    return tx >= DBG_TOGGLE_X && tx < DBG_TOGGLE_X + DBG_TOGGLE_W &&
+           ty >= DBG_TOGGLE_Y && ty < DBG_TOGGLE_Y + DBG_TOGGLE_H;
 }
 
 static const softkey_t *current_layout(const softkb_t *kb, int *count) {
@@ -218,6 +277,30 @@ const char *softkb_touch(softkb_t *kb,
     }
     if (tx < 0 || ty < 0) return NULL;
 
+    /* ── Mode badge: double-tap to enter debug, single-tap to leave ── */
+    if (badge_hit(tx, ty)) {
+        int now  = kbd->frame;
+        int diff = now - kb->badge_last_tap_frame;
+        if (kb->debug_mode) {
+            /* In debug mode, any single tap on the badge exits. */
+            kb->debug_mode = 0;
+        } else if (diff > 0 && diff < BADGE_DOUBLE_TAP_FRAMES) {
+            /* Two badge taps within ~500 ms → enter debug mode. */
+            kb->debug_mode = 1;
+        }
+        kb->badge_last_tap_frame = now;
+        return NULL;
+    }
+
+    /* ── Debug-mode taps go to the debug-page widgets, not to keys. ── */
+    if (kb->debug_mode) {
+        if (dbg_toggle_hit(tx, ty)) {
+            kb->mascot_enabled = !kb->mascot_enabled;
+        }
+        return NULL;
+    }
+
+    /* ── Normal keyboard mode: hit-test keys, dispatch a byte. ── */
     int idx = hit_test(kb, tx, ty);
     if (idx < 0) {
         kb->pressed_idx = -1;
@@ -466,10 +549,84 @@ static void draw_status_row(renderer_t *r, const keyboard_t *kbd) {
     (void)r;  /* unused with the px path */
 }
 
+/* ── debug page ────────────────────────────────────────────────────── */
+
+static void draw_debug_screen(softkb_t *kb, renderer_t *r,
+                              const keyboard_t *kbd) {
+    /* Solid background over the whole bottom screen. */
+    C2D_DrawRectSolid(0, 0, 0.05f, 320, 240,
+                      rgba_to_c2d_(COL_STATUS_BG));
+
+    /* Keep the status bar so the ENG/CHN badge is still visible/tappable
+     * — that's how the user gets back out. */
+    draw_status_row(r, kbd);
+
+    /* Title + exit hint */
+    renderer_draw_text_px(8, 40, "DEBUG", COL_STATUS_FG_HOLD);
+    renderer_draw_text_px(48, 40, "tap CHN/ENG to exit",
+                          COL_STATUS_DIM);
+
+    /* Recv hex strip — last up to 32 SSH-bound bytes, two lines of 16
+     * with their byte indices for byte-level traceback. */
+    renderer_draw_text_px(8, 60, "recv:", COL_KEY_LABEL);
+    int hex_x = 8 + 6 * 6;
+    int hex_y = 60;
+    int show  = kb->recv_count;          /* 0..32 */
+    int start = (kb->recv_head - show + 32) % 32;
+    for (int i = 0; i < show; i++) {
+        char hex[4];
+        uint8_t b = kb->recv_ring[(start + i) % 32];
+        snprintf(hex, sizeof(hex), "%02x", b);
+        renderer_draw_text_px(hex_x, hex_y, hex, COL_KEY_LABEL);
+        hex_x += 18;                     /* 2 chars + 1 char gap */
+        if (hex_x > 320 - 18) {
+            hex_x = 8 + 6 * 6;
+            hex_y += 14;
+        }
+    }
+    if (show == 0) {
+        renderer_draw_text_px(hex_x, hex_y, "(no SSH bytes yet)",
+                              COL_STATUS_DIM);
+    }
+
+    /* Physical-key bindings legend.  These mirror keyboard.c's M4 table
+     * verbatim; if those bindings change, this list must too. */
+    int kb_y = 100;
+    renderer_draw_text_px(8, kb_y +  0,
+        "L      = Shift  Y = Ctrl   X = Alt",  COL_KEY_LABEL);
+    renderer_draw_text_px(8, kb_y + 14,
+        "A      = Enter  B = Backsp",          COL_KEY_LABEL);
+    renderer_draw_text_px(8, kb_y + 28,
+        "SELECT = Esc    R = mode toggle",     COL_KEY_LABEL);
+    renderer_draw_text_px(8, kb_y + 42,
+        "D-pad  = arrows  Circle = scroll",    COL_KEY_LABEL);
+    renderer_draw_text_px(8, kb_y + 56,
+        "START  = quit",                       COL_KEY_LABEL);
+
+    /* Mascot toggle button — drawn as a regular key for visual
+     * consistency with the keyboard layout. */
+    char btn_label[24];
+    snprintf(btn_label, sizeof(btn_label), "MASCOT: %s",
+             kb->mascot_enabled ? "ON" : "OFF");
+    draw_key_button(DBG_TOGGLE_X, DBG_TOGGLE_Y,
+                    DBG_TOGGLE_W, DBG_TOGGLE_H,
+                    COL_KEY_BODY, 0);
+    int blen = (int)strlen(btn_label);
+    renderer_draw_text_px(
+        DBG_TOGGLE_X + (DBG_TOGGLE_W - blen * CELL_W) / 2,
+        DBG_TOGGLE_Y + (DBG_TOGGLE_H - CELL_H)   / 2,
+        btn_label, COL_KEY_LABEL);
+}
+
 /* ── public draw ───────────────────────────────────────────────────── */
 
 void softkb_draw(softkb_t *kb, renderer_t *r, const keyboard_t *kbd) {
     if (!kb || !r) return;
+
+    if (kb->debug_mode) {
+        draw_debug_screen(kb, r, kbd);
+        return;
+    }
 
     draw_status_row(r, kbd);
 

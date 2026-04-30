@@ -54,3 +54,27 @@ const char *softkb_touch(softkb_t *kb,
 
 /* Currently displayed page (for diagnostic / layout testing). */
 softkb_page_t softkb_current_page(const softkb_t *kb);
+
+/* ── Debug page ─────────────────────────────────────────────────────
+ *
+ * Double-tapping the right-side ENG/CHN mode badge toggles into a full-
+ * screen debug overlay that mirrors the M3 byte-tracing panel.  It
+ * shows the last 32 received bytes in hex, every physical-key binding,
+ * and a button to disable the bottom-row mascot.  Tap the badge once
+ * to leave debug mode.
+ */
+
+/* Append received SSH bytes to the debug recv ring (last 32 bytes
+ * shown).  Safe to call every frame; bytes < 1 are no-ops. */
+void softkb_record_recv(softkb_t *kb, const char *bytes, int n);
+
+/* True iff the keyboard is currently rendering the debug overlay
+ * instead of the key layout.  When this returns 1, main.c should also
+ * suppress the clock + mascot in the bottom row — the debug page
+ * occupies the full bottom screen. */
+int  softkb_in_debug(const softkb_t *kb);
+
+/* Mascot enable flag — toggled from the debug page button.  Defaults
+ * to 1 (mascot visible).  When 0, main.c should skip mascot_update
+ * and mascot_draw so the crab stops moving and disappears. */
+int  softkb_mascot_enabled(const softkb_t *kb);

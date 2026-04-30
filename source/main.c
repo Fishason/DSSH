@@ -209,6 +209,9 @@ idle_loop:
             if (ssh && ssh_is_connected(ssh)) {
                 int n = ssh_read(ssh, rbuf, sizeof(rbuf));
                 if (n > 0) {
+                    /* Capture for the debug page's recv-ring before the
+                     * UTF-8 reassembler can chop the buffer up. */
+                    softkb_record_recv(kb, rbuf, n);
                     feed_terminal(term, rbuf, n);
                 } else if (n < 0) {
                     terminal_write(term, "\r\n\x1b[31m[disconnected]\x1b[0m\r\n");
@@ -233,8 +236,15 @@ idle_loop:
 
             /* Bottom row (y >= 214) belongs to mascot — taps there don't
              * reach softkb.  On the down-edge we hit-test the crab; if
-             * it's where the finger lands the crab flees. */
-            if (touch_down && ty >= 214) {
+             * it's where the finger lands the crab flees.
+             *
+             * The mascot is suppressed entirely when the debug overlay
+             * is up or the user has toggled it off, so taps in that
+             * region fall through to softkb_touch (which no-ops since
+             * no key extends below y=213 in normal mode, and the debug
+             * page handles its own widgets). */
+            int show_mascot = !softkb_in_debug(kb) && softkb_mascot_enabled(kb);
+            if (touch_down && ty >= 214 && show_mascot) {
                 if (mascot_hit_test(mc, tx, ty))
                     mascot_on_touched(mc, tx);
             } else {
@@ -246,8 +256,10 @@ idle_loop:
                 softkb_touch(kb, kbd, -1, -1, 0);
             }
 
-            /* Mascot ticks once per frame regardless of input. */
-            mascot_update(mc);
+            /* Mascot ticks only when it's actually being shown.  When
+             * paused this way it freezes in place; on re-enable it
+             * resumes from wherever it stopped. */
+            if (show_mascot) mascot_update(mc);
 
             /* ── Render ── */
             C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
@@ -260,8 +272,9 @@ idle_loop:
             softkb_draw(kb, r, kbd);
 
             /* Bottom row: clock on the left, mascot on the right.
-             * Both live at y=214..239 below softkb's last key row. */
-            {
+             * Suppressed entirely when the debug overlay is up — the
+             * debug page draws its own full-screen background. */
+            if (!softkb_in_debug(kb)) {
                 char clock_buf[24];
                 time_t now = time(NULL);
                 struct tm lt;
@@ -273,8 +286,8 @@ idle_loop:
                 /* Vertically center 12-px text in the 26-px bottom row:
                  * y = 214 + (26-12)/2 = 221. */
                 renderer_draw_text_px(2, 221, clock_buf, COLOR_DIM);
+                if (softkb_mascot_enabled(kb)) mascot_draw(mc);
             }
-            mascot_draw(mc);
 
             C3D_FrameEnd(0);
         }
