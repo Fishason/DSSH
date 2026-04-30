@@ -139,13 +139,16 @@ static void draw_status(renderer_t *r, const ssh_config_t *cfg,
     /* Key legend */
     renderer_draw_text(r, 1,  8, "KEY LEGEND", COLOR_ACCENT);
     renderer_draw_text(r, 1,  9, "  A    Enter        D-pad arrows", COLOR_FG);
-    renderer_draw_text(r, 1, 10, "  B    Backspace    L+key Ctrl-key", COLOR_FG);
-    renderer_draw_text(r, 1, 11, "  X    type (swkbd) SELECT sticky-Ctrl", COLOR_FG);
-    renderer_draw_text(r, 1, 12, "  Y    scroll mode  Stick: scroll", COLOR_FG);
-    renderer_draw_text(r, 1, 13, "  STRT quit                       ", COLOR_FG);
+    renderer_draw_text(r, 1, 10, "  B    Backspace    SELECT sticky-Ctrl", COLOR_FG);
+    renderer_draw_text(r, 1, 11, "  X    type (swkbd) Y    scroll mode", COLOR_FG);
+    renderer_draw_text(r, 1, 12, "  STRT quit         Stick: scroll", COLOR_FG);
 
-    renderer_draw_text(r, 1, 16, "M4 will replace this with a touch keyboard.",
-                       COLOR_DIM);
+    renderer_draw_text(r, 1, 14, "TIPS", COLOR_ACCENT);
+    renderer_draw_text(r, 1, 15, "  Ctrl-C: SELECT then X+'c' (one-shot)", COLOR_FG);
+    renderer_draw_text(r, 1, 16, "  Ctrl-lock: SELECT twice  off: SELECT 3x", COLOR_FG);
+    renderer_draw_text(r, 1, 17, "  tmux scroll: Ctrl-B then [ (server side)", COLOR_FG);
+
+    renderer_draw_text(r, 1, 19, "M4 will add a touch keyboard.", COLOR_DIM);
 }
 
 int main(int argc, char *argv[]) {
@@ -258,11 +261,16 @@ idle_loop:
                 ssh_write(ssh, out, (int)strlen(out));
             }
 
-            /* X = pop swkbd for free-form text entry (replaced in M4). */
+            /* X = pop swkbd for free-form text entry (replaced in M4). The
+             * sticky Ctrl modifier set via SELECT is applied here too: ARMED
+             * Ctrl-transforms the first typed char (so SELECT -> X -> 'c'
+             * sends Ctrl-C); LOCKED transforms every char until SELECT
+             * cycles back to OFF. */
             if ((down & KEY_X) && ssh && ssh_is_connected(ssh)) {
                 if (prompt_swkbd("type a line", ibuf, sizeof(ibuf))) {
                     int n = (int)strlen(ibuf);
                     if (n > 0) {
+                        n = keyboard_apply_modifiers(kbd, ibuf, n);
                         terminal_scroll_view(term, -term->sb_offset);
                         ssh_write(ssh, ibuf, n);
                     }

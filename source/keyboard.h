@@ -32,6 +32,7 @@ typedef enum {
 typedef struct keyboard_t {
     mod_state_t sticky_ctrl;
     int         scroll_mode;    /* Y toggles */
+    int         scroll_timer;   /* debounce: N frames between scroll steps */
 
     /* Output buffer for the byte sequence produced this frame. */
     char  out_buf[16];
@@ -64,3 +65,15 @@ const char *keyboard_mod_label(const keyboard_t *kbd);
 
 /* True if scroll mode is active (renderer can show indicator). */
 int keyboard_in_scroll_mode(const keyboard_t *kbd);
+
+/* Apply the current sticky Ctrl state to a buffer in place.
+ *
+ * ARMED  -> transform the first byte to its Ctrl- form, then drop to OFF.
+ * LOCKED -> transform every byte (Ctrl is held until SELECT pressed again).
+ * OFF    -> no-op.
+ *
+ * Used by the swkbd path in main.c so that pressing SELECT then opening
+ * the system keyboard and typing 'c' produces Ctrl-C on the wire.
+ *
+ * Returns the (possibly unchanged) buffer length. */
+int keyboard_apply_modifiers(keyboard_t *kbd, char *buf, int len);

@@ -188,9 +188,15 @@ def is_empty_or_notdef(rows):
 glyph_bitmaps = [[0] * CELL_H for _ in range(NGLYPHS)]
 empty_cps = set()
 for cp, atlas_idx in CHAR_MAP.items():
+    # Fallback chain for narrow glyph rendering:
+    #   Terminus (true bitmap, perfect for ASCII + box-draw)
+    #   -> DejaVu Sans Mono (broad symbol coverage at 12px)
+    #   -> Zpix (catches geometric shapes ○●■□▲▼ that the above lack)
     rows = render_rows(cp, font_narrow, CELL_W, CELL_H)
     if cp > 0x7E and is_empty_or_notdef(rows) and font_symbols is not None:
         rows = render_rows(cp, font_symbols, CELL_W, CELL_H)
+    if cp > 0x7E and all(b == 0 for b in rows) and font_wide is not None:
+        rows = render_rows(cp, font_wide, CELL_W, CELL_H)
     if all(b == 0 for b in rows) and cp > 0x7E:
         empty_cps.add(cp)
     else:

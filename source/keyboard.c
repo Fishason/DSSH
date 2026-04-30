@@ -87,11 +87,17 @@ const char *keyboard_handle_input(keyboard_t *kbd,
         return NULL;
     }
 
-    /* Circle Pad in scroll mode -> scrollback. We use a coarse step on every
-     * frame the stick is past the deadband; this matches skmtrd's pacing. */
+    /* Circle Pad in scroll mode -> scrollback, throttled so a sustained push
+     * scrolls roughly 12 lines/sec (otherwise 60 fps × 1 line = whole 500-row
+     * scrollback in 8 seconds). */
     if (kbd->scroll_mode && term && (circle_dy > 50 || circle_dy < -50)) {
-        terminal_scroll_view(term, circle_dy > 0 ? 1 : -1);
+        if (++kbd->scroll_timer >= 5) {
+            kbd->scroll_timer = 0;
+            terminal_scroll_view(term, circle_dy > 0 ? 1 : -1);
+        }
         return NULL;
+    } else {
+        kbd->scroll_timer = 0;
     }
 
     /* Outside scroll mode: any output should snap the view to the bottom so
@@ -146,4 +152,25 @@ const char *keyboard_mod_label(const keyboard_t *kbd) {
 
 int keyboard_in_scroll_mode(const keyboard_t *kbd) {
     return kbd && kbd->scroll_mode;
+}
+
+int keyboard_apply_modifiers(keyboard_t *kbd, char *buf, int len) {
+    if (!kbd || !buf || len <= 0) return len;
+    switch (kbd->sticky_ctrl) {
+        case MOD_OFF:
+            return len;
+        case MOD_ARMED: {
+            char c = to_ctrl(buf[0]);
+            if (c) buf[0] = c;
+            kbd->sticky_ctrl = MOD_OFF;
+            return len;
+        }
+        case MOD_LOCKED:
+            for (int i = 0; i < len; i++) {
+                char c = to_ctrl(buf[i]);
+                if (c) buf[i] = c;
+            }
+            return len;
+    }
+    return len;
 }

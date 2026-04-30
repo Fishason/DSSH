@@ -3,7 +3,12 @@
 
 #define TERM_MAX_COLS   80
 #define TERM_MAX_ROWS   30
-#define TERM_SCROLLBACK 500
+/* Scrollback rows kept in memory.  At 80 cols × 12 bytes/cell that's
+ * SCROLLBACK × 960 bytes — 2000 rows = 1.9 MB which is fine on the 3DS
+ * (default heap ≥ 64 MB).  Note: when running tmux/screen the server-side
+ * history (configurable via tmux's `set -g history-limit`) is the real
+ * scrollback; ours only kicks in for output that isn't under a multiplexer. */
+#define TERM_SCROLLBACK 2000
 
 typedef struct {
     uint32_t codepoint;
