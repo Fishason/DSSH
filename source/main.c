@@ -75,6 +75,44 @@ static int prompt_swkbd(const char *hint, char *out, int out_sz) {
 static char utf8_frag[4];
 static int  utf8_frag_len = 0;
 
+/* Diagnostic: ring of last bytes sent / received so the user can verify on
+ * the bottom panel what's actually going over the wire when keys don't
+ * seem to be doing what they should. */
+#define DBG_LOG_LEN 8
+static unsigned char dbg_sent[DBG_LOG_LEN];
+static int dbg_sent_count = 0;
+static unsigned char dbg_recv[DBG_LOG_LEN];
+static int dbg_recv_count = 0;
+
+static void dbg_log_sent(const char *buf, int n) {
+    for (int i = 0; i < n && dbg_sent_count < 1<<30; i++) {
+        dbg_sent[dbg_sent_count % DBG_LOG_LEN] = (unsigned char)buf[i];
+        dbg_sent_count++;
+    }
+}
+
+static void dbg_log_recv(const char *buf, int n) {
+    for (int i = 0; i < n; i++) {
+        dbg_recv[dbg_recv_count % DBG_LOG_LEN] = (unsigned char)buf[i];
+        dbg_recv_count++;
+    }
+}
+
+/* Format the ring as a hex string of the most recent DBG_LOG_LEN bytes,
+ * oldest-first. */
+static void dbg_fmt(char *out, int out_sz,
+                    const unsigned char *ring, int total) {
+    int n = total < DBG_LOG_LEN ? total : DBG_LOG_LEN;
+    int start = (total - n + DBG_LOG_LEN) % DBG_LOG_LEN;
+    if (total < DBG_LOG_LEN) start = 0;
+    int p = 0;
+    for (int i = 0; i < n && p < out_sz - 4; i++) {
+        int idx = (start + i) % DBG_LOG_LEN;
+        p += snprintf(out + p, out_sz - p, "%02x ", ring[idx]);
+    }
+    out[p] = 0;
+}
+
 static void feed_terminal(terminal_t *term, const char *raw, int raw_len) {
     char buf[4 + READ_BUFSZ];
     int total;
@@ -140,9 +178,25 @@ static void draw_status(renderer_t *r, const ssh_config_t *cfg,
     renderer_draw_text(r, 1, 13, "TIPS", COLOR_ACCENT);
     renderer_draw_text(r, 1, 14, "  Ctrl-C: SELECT then X+'c'", COLOR_FG);
     renderer_draw_text(r, 1, 15, "  tmux history: prefix [ (Ctrl-B then [)", COLOR_FG);
-    renderer_draw_text(r, 1, 16, "  any key auto-snaps view to live", COLOR_DIM);
 
-    renderer_draw_text(r, 1, 19, "M4 will add a touch keyboard.", COLOR_DIM);
+    /* Diagnostic readout — proves what bytes hit the wire when the user
+     * presses a key.  Press B and look for "7f" in 'sent'.  Watch how
+     * cursor moves in the term struct vs what you see on the top screen. */
+    renderer_draw_text(r, 1, 17, "DEBUG", COLOR_ACCENT);
+    if (term) {
+        snprintf(line, sizeof(line),
+                 "cur=(%d,%d) mouse=%d/%d alt=%d",
+                 term->cur_x, term->cur_y,
+                 term->mouse_proto, term->mouse_sgr, term->use_alt);
+        renderer_draw_text(r, 1, 18, line, COLOR_DIM);
+    }
+    char hex[64];
+    dbg_fmt(hex, sizeof(hex), dbg_sent, dbg_sent_count);
+    snprintf(line, sizeof(line), "sent: %s", hex);
+    renderer_draw_text(r, 1, 19, line, COLOR_DIM);
+    dbg_fmt(hex, sizeof(hex), dbg_recv, dbg_recv_count);
+    snprintf(line, sizeof(line), "recv: %s", hex);
+    renderer_draw_text(r, 1, 20, line, COLOR_DIM);
 }
 
 int main(int argc, char *argv[]) {
@@ -239,6 +293,7 @@ idle_loop:
             if (ssh && ssh_is_connected(ssh)) {
                 int n = ssh_read(ssh, rbuf, sizeof(rbuf));
                 if (n > 0) {
+                    dbg_log_recv(rbuf, n);
                     feed_terminal(term, rbuf, n);
                 } else if (n < 0) {
                     terminal_write(term, "\r\n\x1b[31m[disconnected]\x1b[0m\r\n");
@@ -254,8 +309,10 @@ idle_loop:
              * echo even if they were peeking at scrollback). */
             const char *out = keyboard_handle_input(kbd, term, down, held, cpad.dy);
             if (out && ssh && ssh_is_connected(ssh)) {
+                int olen = (int)strlen(out);
                 if (term->sb_offset != 0) terminal_scroll_view(term, -term->sb_offset);
-                ssh_write(ssh, out, (int)strlen(out));
+                dbg_log_sent(out, olen);
+                ssh_write(ssh, out, olen);
             }
 
             /* X = pop swkbd for free-form text entry (replaced in M4). The
@@ -268,6 +325,7 @@ idle_loop:
                     if (n > 0) {
                         n = keyboard_apply_modifiers(kbd, ibuf, n);
                         terminal_scroll_view(term, -term->sb_offset);
+                        dbg_log_sent(ibuf, n);
                         ssh_write(ssh, ibuf, n);
                     }
                 }
