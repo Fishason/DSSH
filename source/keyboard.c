@@ -3,6 +3,45 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* ──────────────────────────────────────────────────────────────────────
+ * D-pad auto-repeat tuning (USER CONTRIBUTION OPPORTUNITY)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 3DS runs at 60 fps, so 1 frame = ~16.7 ms.
+ *
+ * DPAD_INITIAL_DELAY: how many frames the user must hold a direction
+ *                     before auto-repeat kicks in.  Too short = a brisk
+ *                     single tap fires twice; too long = feels laggy.
+ *                     Common values: 20 (333ms) ... 36 (600ms).
+ *
+ * dpad_repeat_period(phase):
+ *     given how many frames into the auto-repeat phase we are, return
+ *     the number of frames between successive emissions.  Lower = faster.
+ *     Multiple shapes possible:
+ *       step:    if (phase < N) return slow; else if (...) return mid; ...
+ *       linear:  return max(min, slow - phase / step)
+ *       expo:    return max(min, slow >> (phase / decay))
+ *
+ * Quick reference of "events per second" at 60 fps:
+ *     period = 12  →  5 events/sec   (slow scrolling, careful navigation)
+ *     period = 6   →  10 events/sec  (medium, comfortable for prose)
+ *     period = 4   →  15 events/sec
+ *     period = 3   →  20 events/sec  (fast, for scanning long lines)
+ *     period = 2   →  30 events/sec
+ *
+ * The current values are placeholders — try them on hardware and tune.
+ */
+#define DPAD_INITIAL_DELAY 25   /* ~417 ms hold before auto-repeat starts */
+
+static int dpad_repeat_period(int phase) {
+    /* TODO USER: pick the timing curve that feels best in your hands.
+     * Below is a 3-step ramp; feel free to add more steps, change the
+     * thresholds, or replace with a continuous formula. */
+    if (phase <  60) return 10;   /* first 1.0 s: ~6 events/sec */
+    if (phase < 150) return 5;    /* next 1.5 s: ~12 events/sec */
+    return 3;                     /* after 2.5 s: ~20 events/sec */
+}
+
 keyboard_t *keyboard_init(void) {
     keyboard_t *k = calloc(1, sizeof(*k));
     return k;
@@ -125,11 +164,52 @@ const char *keyboard_handle_input(keyboard_t *kbd,
 
     int l_held = (keys_held & KEY_L) ? 1 : 0;
 
-    /* D-pad arrows (raw ANSI sequences, no Ctrl). */
-    if (keys_down & KEY_DUP)    return emit(kbd, "\x1b[A");
-    if (keys_down & KEY_DDOWN)  return emit(kbd, "\x1b[B");
-    if (keys_down & KEY_DRIGHT) return emit(kbd, "\x1b[C");
-    if (keys_down & KEY_DLEFT)  return emit(kbd, "\x1b[D");
+    /* ── D-pad with auto-repeat ─────────────────────────────────────────
+     * Long-pressing a direction should keep firing arrow keys, accelerating
+     * over time (slow at first so a quick tap doesn't double-fire,
+     * faster after a sustained hold so you can scan through long lines).
+     *
+     * Algorithm:
+     *   - Snapshot which D-pad direction is currently held (single dir).
+     *   - If the direction differs from last frame, reset dpad_frames to 0.
+     *   - Frame 0:  fire immediately (responsive single tap).
+     *   - Frames 1..DPAD_INITIAL_DELAY-1:  do nothing (hold detection).
+     *   - From DPAD_INITIAL_DELAY onward: fire every dpad_repeat_period(phase)
+     *     frames where phase = frames since the repeat phase started.
+     *
+     * Tunable user contribution point below — see dpad_repeat_period(). */
+    u32 dpad = keys_held & (KEY_DUP | KEY_DDOWN | KEY_DLEFT | KEY_DRIGHT);
+    u32 dpad_active = 0;
+    if      (dpad & KEY_DUP)    dpad_active = KEY_DUP;
+    else if (dpad & KEY_DDOWN)  dpad_active = KEY_DDOWN;
+    else if (dpad & KEY_DRIGHT) dpad_active = KEY_DRIGHT;
+    else if (dpad & KEY_DLEFT)  dpad_active = KEY_DLEFT;
+
+    if (dpad_active != kbd->dpad_last) {
+        kbd->dpad_last   = dpad_active;
+        kbd->dpad_frames = 0;
+    }
+    if (dpad_active) {
+        int fire = 0;
+        if (kbd->dpad_frames == 0) {
+            fire = 1;
+        } else if (kbd->dpad_frames >= DPAD_INITIAL_DELAY) {
+            int phase = kbd->dpad_frames - DPAD_INITIAL_DELAY;
+            int period = dpad_repeat_period(phase);
+            if (period > 0 && phase % period == 0) fire = 1;
+        }
+        kbd->dpad_frames++;
+        if (fire) {
+            const char *seq;
+            if      (dpad_active == KEY_DUP)    seq = "\x1b[A";
+            else if (dpad_active == KEY_DDOWN)  seq = "\x1b[B";
+            else if (dpad_active == KEY_DRIGHT) seq = "\x1b[C";
+            else                                 seq = "\x1b[D";
+            return emit(kbd, seq);
+        }
+        /* Held but not firing this frame — fall through so other keys
+         * can still be processed (A/B/X/etc. while D-pad is held). */
+    }
 
     /* Primary inputs */
     if (keys_down & KEY_A) {

@@ -27,6 +27,14 @@ typedef struct keyboard_t {
     mod_state_t sticky_ctrl;
     int         scroll_timer;   /* debounce: N frames between scroll steps */
 
+    /* D-pad auto-repeat: re-fire arrow sequences while a direction is held.
+     * dpad_last is the single direction key currently held (0 = none);
+     * dpad_frames counts how many frames in a row it has been held.  Reset
+     * to 0 when the user releases or switches directions.  Used by the
+     * auto-repeat ramp (initial fire, delay, accelerating repeat). */
+    u32 dpad_last;
+    int dpad_frames;
+
     /* Output buffer for the byte sequence produced this frame. */
     char  out_buf[16];
     int   out_len;
