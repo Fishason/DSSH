@@ -210,7 +210,9 @@ const char *softkb_touch(softkb_t *kb,
     if (!pressed) {
         if (kb->pressed_idx >= 0) {
             kb->pressed_frames++;
-            if (kb->pressed_frames > 6) kb->pressed_idx = -1;
+            /* Keep the key visually engaged through the full press-down
+             * animation (see PRESS_ANIM_FRAMES below). */
+            if (kb->pressed_frames > 14) kb->pressed_idx = -1;
         }
         return NULL;
     }
@@ -251,108 +253,145 @@ static u32 rgba_to_c2d_(uint32_t rgba) {
                         rgba        & 0xff);
 }
 
-/* Punch-out the four corners of a rect with the bottom-screen background
- * color so the key looks 2-px rounded.  At iOS-keyboard sizes a 2-px
- * chamfer is the sweet spot — visibly round but not so much that the
- * label loses room.  We paint an L-shape at each corner: 1 px on the
- * extreme corner + 1 px each side.
+/* Press-down animation timing.  When a key is tapped, pressed_frames
+ * counts up from 0; press_depth() turns that frame counter into a
+ * pixel-offset and an interpolation factor used to smoothly translate
+ * the key downward and blend its body color toward the press color.
  *
- *     ##.. .##
- *     #... ...#         (corner pixel + 1 horizontal + 1 vertical)
- *     ........
- *     #... ...#
- *     ##.. .##
- */
+ *   0          PEAK              END
+ *   |-----------|-----------------|
+ *   depth: 0 → MAX               → 0
+ *
+ * 60 fps means PRESS_ANIM_FRAMES=14 ≈ 230 ms — slow enough to feel
+ * like a key going down and snapping back, fast enough to keep up
+ * with rapid typing. */
+#define PRESS_ANIM_FRAMES  14
+#define PRESS_ANIM_PEAK     6
+#define PRESS_MAX_DEPTH     2
+
+static int press_depth(int frames) {
+    if (frames < 0 || frames >= PRESS_ANIM_FRAMES) return 0;
+    if (frames <= PRESS_ANIM_PEAK) {
+        /* down phase: 0 → MAX */
+        return (frames * PRESS_MAX_DEPTH + PRESS_ANIM_PEAK / 2)
+             / PRESS_ANIM_PEAK;
+    }
+    /* up phase: MAX → 0 */
+    int up    = PRESS_ANIM_FRAMES - PRESS_ANIM_PEAK;
+    int phase = PRESS_ANIM_FRAMES - frames;
+    return (phase * PRESS_MAX_DEPTH + up / 2) / up;
+}
+
+/* Channel-wise lerp between two RGBA colors.  t / range → 0..1 weight
+ * toward `b`.  Saturating, so out-of-range t just clamps. */
+static uint32_t blend_rgba(uint32_t a, uint32_t b, int t, int range) {
+    if (range <= 0 || t <= 0) return a;
+    if (t >= range) return b;
+    uint32_t ar = (a >> 24) & 0xff, ag = (a >> 16) & 0xff;
+    uint32_t ab = (a >>  8) & 0xff, aa =  a        & 0xff;
+    uint32_t br = (b >> 24) & 0xff, bg = (b >> 16) & 0xff;
+    uint32_t bb = (b >>  8) & 0xff, ba =  b        & 0xff;
+    uint32_t r  = (ar * (range - t) + br * t) / range;
+    uint32_t g  = (ag * (range - t) + bg * t) / range;
+    uint32_t bl = (ab * (range - t) + bb * t) / range;
+    uint32_t al = (aa * (range - t) + ba * t) / range;
+    return (r << 24) | (g << 16) | (bl << 8) | al;
+}
+
+/* 3-pixel triangular round-corner.  Punches the key's four corners with
+ * the screen bg color so the rectangle looks rounded:
+ *
+ *   ###..      (row 0:  3 px)
+ *   ##...      (row 1:  2 px)
+ *   #....      (row 2:  1 px)
+ *   .....
+ *
+ * 3 px is ~10% of the 32 px key width — the same proportion iOS uses
+ * for its keyboard, and visibly more rounded than the previous 2-px
+ * L-shaped chamfer. */
 static void round_corners(int x, int y, int w, int h, float z) {
     uint32_t c = rgba_to_c2d_(COL_CHAMFER);
     /* TL */
-    C2D_DrawRectSolid((float)x,        (float)y,        z, 2, 1, c);
-    C2D_DrawRectSolid((float)x,        (float)(y + 1),  z, 1, 1, c);
+    C2D_DrawRectSolid((float)x,       (float)y,       z, 3, 1, c);
+    C2D_DrawRectSolid((float)x,       (float)(y + 1), z, 2, 1, c);
+    C2D_DrawRectSolid((float)x,       (float)(y + 2), z, 1, 1, c);
     /* TR */
-    C2D_DrawRectSolid((float)(x+w-2),  (float)y,        z, 2, 1, c);
-    C2D_DrawRectSolid((float)(x+w-1),  (float)(y + 1),  z, 1, 1, c);
+    C2D_DrawRectSolid((float)(x+w-3), (float)y,       z, 3, 1, c);
+    C2D_DrawRectSolid((float)(x+w-2), (float)(y + 1), z, 2, 1, c);
+    C2D_DrawRectSolid((float)(x+w-1), (float)(y + 2), z, 1, 1, c);
     /* BL */
-    C2D_DrawRectSolid((float)x,        (float)(y+h-1),  z, 2, 1, c);
-    C2D_DrawRectSolid((float)x,        (float)(y+h-2),  z, 1, 1, c);
+    C2D_DrawRectSolid((float)x,       (float)(y+h-1), z, 3, 1, c);
+    C2D_DrawRectSolid((float)x,       (float)(y+h-2), z, 2, 1, c);
+    C2D_DrawRectSolid((float)x,       (float)(y+h-3), z, 1, 1, c);
     /* BR */
-    C2D_DrawRectSolid((float)(x+w-2),  (float)(y+h-1),  z, 2, 1, c);
-    C2D_DrawRectSolid((float)(x+w-1),  (float)(y+h-2),  z, 1, 1, c);
+    C2D_DrawRectSolid((float)(x+w-3), (float)(y+h-1), z, 3, 1, c);
+    C2D_DrawRectSolid((float)(x+w-2), (float)(y+h-2), z, 2, 1, c);
+    C2D_DrawRectSolid((float)(x+w-1), (float)(y+h-3), z, 1, 1, c);
 }
 
-/* iOS-style key rendering:
- *   - rounded 2-px corners
- *   - subtle bottom shadow under un-pressed keys for the "lifted" look
- *   - on press: NO downward shift (Android/material does that — iOS
- *     just brightens the fill in place)
- *   - on press: thin outer halo in the press color, 1 px around the key
+/* Render one key.  `depth` is 0 when at rest and grows up to
+ * PRESS_MAX_DEPTH (2 px) at the peak of the press animation.  The
+ * whole key — border, body, top highlight, label, corners — translates
+ * downward by `depth`, mimicking a real keyboard cap going down.
+ *
+ *   - At rest (depth=0):  shadow under the key + top highlight strip
+ *                          give the 3D lifted look.
+ *   - Mid-press:           shadow fades, body slides down, color blends
+ *                          toward the press color.
  *
  * Z layers (base 0.10, increments of 0.01):
- *   0.10  shadow under un-pressed
- *   0.11  press halo (only when pressed)
+ *   0.10  shadow strip below resting key
  *   0.12  border (dark stroke around body)
  *   0.15  body fill
- *   0.18  top highlight strip (un-pressed only)
+ *   0.18  top highlight strip (resting only)
  *   0.21  rounded-corner chamfer
  */
 static void draw_key_button(int x, int y, int w, int h,
-                            uint32_t body, int pressed) {
-    /* 1-px drop shadow (only un-pressed) */
-    if (!pressed) {
+                            uint32_t body, int depth) {
+    int yd = y + depth;
+
+    /* Resting drop shadow, fades out as depth grows. */
+    if (depth == 0) {
         C2D_DrawRectSolid((float)(x + 1), (float)(y + h), 0.10f,
                           (float)(w - 2), 1,
                           rgba_to_c2d_(COL_KEY_BOT_SHADOW));
     }
 
-    /* Soft outer halo on press: 1 px frame in the press color around
-     * the key bounds. Sits *under* the body so only the protruding
-     * frame edge is visible. */
-    if (pressed) {
-        C2D_DrawRectSolid((float)(x - 1), (float)(y - 1), 0.11f,
-                          (float)(w + 2), (float)(h + 2),
-                          rgba_to_c2d_(COL_KEY_PRESSED));
-    }
-
-    /* Dark border (the whole rect) */
-    C2D_DrawRectSolid((float)x, (float)y, 0.12f,
+    /* Border around the (possibly translated) body. */
+    C2D_DrawRectSolid((float)x, (float)yd, 0.12f,
                       (float)w, (float)h,
                       rgba_to_c2d_(COL_KEY_BORDER));
-    /* Main body, inset 1 px */
-    C2D_DrawRectSolid((float)(x + 1), (float)(y + 1), 0.15f,
+    /* Body fill, inset 1 px from the border. */
+    C2D_DrawRectSolid((float)(x + 1), (float)(yd + 1), 0.15f,
                       (float)(w - 2), (float)(h - 2),
                       rgba_to_c2d_(body));
-    /* Top highlight strip (un-pressed only — gives 3D lift) */
-    if (!pressed) {
-        C2D_DrawRectSolid((float)(x + 1), (float)(y + 1), 0.18f,
+    /* Top highlight only when resting (the sliver at the top of a
+     * physical keycap that catches light). */
+    if (depth == 0) {
+        C2D_DrawRectSolid((float)(x + 1), (float)(yd + 1), 0.18f,
                           (float)(w - 2), 1,
                           rgba_to_c2d_(COL_KEY_TOP));
     }
-
-    /* Round the corners by punching out 2-px chamfers in bg color.
-     * Drawn last (highest z of the key stack) so it cuts through every
-     * layer above. */
-    round_corners(x, y, w, h, 0.21f);
+    /* Corners follow the body's translated position. */
+    round_corners(x, yd, w, h, 0.21f);
 }
 
-/* Centered text label.  Uses pixel-precise renderer_draw_text_px so
- * 1-2 char labels in 32 px wide keys land on their true centers — the
- * old cell-grid path snapped to multiples of 6 px and produced visible
- * left-bias on every key.
- *
- * No press-shift: iOS keyboards keep the label fixed and only the
- * background changes color. */
+/* Centered text label.  Like draw_key_button, the label translates
+ * downward by `depth` so it stays glued to the moving body. */
 static void draw_label(int rx, int ry, int rw, int rh,
-                       const char *text, u32 fg_rgba) {
+                       const char *text, u32 fg_rgba, int depth) {
     if (!text) return;
-    int tlen = (int)strlen(text);
+    int tlen = (int)strlen(text);     /* labels are ASCII; bytes == cols */
     int tw   = tlen * CELL_W;
     int x0   = rx + (rw - tw) / 2;
-    int y0   = ry + (rh - CELL_H) / 2;
+    int y0   = ry + (rh - CELL_H) / 2 + depth;
     renderer_draw_text_px(x0, y0, text, fg_rgba);
 }
 
-/* Decide the body fill color for a key based on its kind and press state. */
-static uint32_t key_body_color(const softkey_t *k, int is_pressed) {
-    if (is_pressed) return COL_KEY_PRESSED;
+/* Resting (un-pressed) body fill color per key kind.  The press
+ * animation blends from this toward COL_KEY_PRESSED rather than
+ * snapping. */
+static uint32_t key_body_color_resting(const softkey_t *k) {
     switch (k->kind) {
         case KIND_PAGE_BTN:    return COL_KEY_PG_BODY;
         case KIND_SPACE:       return COL_KEY_SPACE_BODY;
@@ -363,8 +402,7 @@ static uint32_t key_body_color(const softkey_t *k, int is_pressed) {
     }
 }
 
-static uint32_t key_label_color(const softkey_t *k, int is_pressed) {
-    if (is_pressed) return COL_KEY_PRESSED_FG;
+static uint32_t key_label_color_resting(const softkey_t *k) {
     if (k->kind == KIND_PAGE_BTN) return COL_KEY_PRESSED_FG; /* dark on bright */
     return COL_KEY_LABEL;
 }
@@ -428,79 +466,6 @@ static void draw_status_row(renderer_t *r, const keyboard_t *kbd) {
     (void)r;  /* unused with the px path */
 }
 
-/* iPhone-style press popup: a rounded bubble floating above the just-
- * tapped key, showing the character at 2× scale.  Only emitted for
- * KIND_CHAR / KIND_SEQ keys — space, page-toggle and modifiers don't
- * pop on iOS either.
- *
- * Z layers reserved for the popup:
- *   0.80  popup outer border
- *   0.82  popup body fill
- *   0.84  popup chamfer corners
- *   0.85  popup label (in renderer_draw_text_px_scaled) */
-static void draw_press_popup(const softkey_t *k) {
-    if (!k || !k->label) return;
-    if (k->kind == KIND_SPACE ||
-        k->kind == KIND_PAGE_BTN ||
-        k->kind == KIND_PAGE_TOGGLE) return;
-
-    const int popup_w = 36;
-    const int popup_h = 32;
-    /* Center horizontally over the key, then clamp into screen bounds. */
-    int popup_x = k->x + (k->w - popup_w) / 2;
-    if (popup_x < 1) popup_x = 1;
-    if (popup_x + popup_w > 319) popup_x = 319 - popup_w;
-    /* Sit 4 px above the key. Clamp at the top of the screen — for
-     * row 0 keys this means the popup overlaps the status row, which
-     * is fine: it's a transient hint. */
-    int popup_y = k->y - popup_h - 4;
-    if (popup_y < 1) popup_y = 1;
-
-    /* Drop shadow */
-    C2D_DrawRectSolid((float)(popup_x + 1), (float)(popup_y + popup_h),
-                      0.79f, (float)(popup_w - 2), 1,
-                      rgba_to_c2d_(COL_KEY_BOT_SHADOW));
-    /* Border + body — iOS popups are light/white-ish with the magnified
-     * character drawn in the keyboard's dark text color, opposite of
-     * the resting key. */
-    C2D_DrawRectSolid((float)popup_x, (float)popup_y, 0.80f,
-                      (float)popup_w, (float)popup_h,
-                      rgba_to_c2d_(COL_KEY_BORDER));
-    C2D_DrawRectSolid((float)(popup_x + 1), (float)(popup_y + 1), 0.82f,
-                      (float)(popup_w - 2), (float)(popup_h - 2),
-                      rgba_to_c2d_(COL_KEY_LABEL));
-    /* 3-px rounded corners (slightly bigger than key chamfer) */
-    {
-        uint32_t c = rgba_to_c2d_(COL_CHAMFER);
-        const float z = 0.84f;
-        int x = popup_x, y = popup_y;
-        int W = popup_w,  H = popup_h;
-        /* TL */
-        C2D_DrawRectSolid((float)x,        (float)y,        z, 3, 1, c);
-        C2D_DrawRectSolid((float)x,        (float)(y + 1),  z, 2, 1, c);
-        C2D_DrawRectSolid((float)x,        (float)(y + 2),  z, 1, 1, c);
-        /* TR */
-        C2D_DrawRectSolid((float)(x+W-3),  (float)y,        z, 3, 1, c);
-        C2D_DrawRectSolid((float)(x+W-2),  (float)(y + 1),  z, 2, 1, c);
-        C2D_DrawRectSolid((float)(x+W-1),  (float)(y + 2),  z, 1, 1, c);
-        /* BL */
-        C2D_DrawRectSolid((float)x,        (float)(y+H-1),  z, 3, 1, c);
-        C2D_DrawRectSolid((float)x,        (float)(y+H-2),  z, 2, 1, c);
-        C2D_DrawRectSolid((float)x,        (float)(y+H-3),  z, 1, 1, c);
-        /* BR */
-        C2D_DrawRectSolid((float)(x+W-3),  (float)(y+H-1),  z, 3, 1, c);
-        C2D_DrawRectSolid((float)(x+W-2),  (float)(y+H-2),  z, 2, 1, c);
-        C2D_DrawRectSolid((float)(x+W-1),  (float)(y+H-3),  z, 1, 1, c);
-    }
-    /* 2× label centered */
-    int lbl_len = (int)strlen(k->label);
-    int lbl_w   = lbl_len * CELL_W * 2;
-    int lbl_h   = CELL_H * 2;
-    int lx = popup_x + (popup_w - lbl_w) / 2;
-    int ly = popup_y + (popup_h - lbl_h) / 2;
-    renderer_draw_text_px_scaled(lx, ly, k->label, COL_BG, 2);
-}
-
 /* ── public draw ───────────────────────────────────────────────────── */
 
 void softkb_draw(softkb_t *kb, renderer_t *r, const keyboard_t *kbd) {
@@ -512,16 +477,19 @@ void softkb_draw(softkb_t *kb, renderer_t *r, const keyboard_t *kbd) {
     const softkey_t *layout = current_layout(kb, &n);
     for (int i = 0; i < n; i++) {
         const softkey_t *k = &layout[i];
-        int is_pressed = (i == kb->pressed_idx);
-        uint32_t body  = key_body_color(k, is_pressed);
-        uint32_t lbl   = key_label_color(k, is_pressed);
-        draw_key_button(k->x, k->y, k->w, k->h, body, is_pressed);
-        draw_label(k->x, k->y, k->w, k->h, k->label, lbl);
-    }
-
-    /* Popup bubble for the currently-pressed key (if any).  Drawn last
-     * so it sits above all neighboring keys' chamfers/borders. */
-    if (kb->pressed_idx >= 0 && kb->pressed_idx < n) {
-        draw_press_popup(&layout[kb->pressed_idx]);
+        /* Only the actively-pressed key has nonzero depth/blend; every
+         * other key renders at rest with depth=0, which makes both
+         * blend_rgba calls below short-circuit to the resting color. */
+        int depth = (i == kb->pressed_idx)
+                  ? press_depth(kb->pressed_frames)
+                  : 0;
+        uint32_t resting_body = key_body_color_resting(k);
+        uint32_t resting_lbl  = key_label_color_resting(k);
+        uint32_t body = blend_rgba(resting_body, COL_KEY_PRESSED,
+                                   depth, PRESS_MAX_DEPTH);
+        uint32_t lbl  = blend_rgba(resting_lbl,  COL_KEY_PRESSED_FG,
+                                   depth, PRESS_MAX_DEPTH);
+        draw_key_button(k->x, k->y, k->w, k->h, body, depth);
+        draw_label(k->x, k->y, k->w, k->h, k->label, lbl, depth);
     }
 }
