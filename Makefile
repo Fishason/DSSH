@@ -19,6 +19,7 @@ BUILD		:=	build
 SOURCES		:=	source
 DATA		:=	data
 INCLUDES	:=	include
+ROMFS		:=	romfs
 
 APP_TITLE	:=	3DS SSH Client
 APP_DESCRIPTION	:=	SSH terminal with Chinese IME
@@ -103,9 +104,19 @@ ifneq ($(ROMFS),)
 	export _3DSXFLAGS += --romfs=$(CURDIR)/$(ROMFS)
 endif
 
-.PHONY: $(BUILD) clean all
+.PHONY: $(BUILD) clean all ime-dict test-ime
 
 all: $(BUILD)
+
+# Regenerate the pinyin IME binary dict (rime-ice top-300k entries).
+# Output goes into romfs/pinyin_dict.bin and is bundled by --romfs.
+ime-dict:
+	@bash tools/fetch_pinyin_dict.sh
+	@python3 tools/gen_pinyin_dict.py
+
+# Host-side smoke test for the IME engine — much faster than 3dslink.
+test-ime:
+	@bash tools/test_ime.sh
 
 $(BUILD):
 	@mkdir -p $@

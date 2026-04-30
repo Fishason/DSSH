@@ -29,6 +29,7 @@
 #include "keyboard.h"
 #include "softkb.h"
 #include "mascot.h"
+#include "ime_pinyin.h"
 
 #define SOC_ALIGN       0x1000
 #define SOC_BUFFERSIZE  0x100000
@@ -120,6 +121,10 @@ int main(int argc, char *argv[]) {
     C3D_RenderTarget *top = C2D_CreateScreenTarget(GFX_TOP,    GFX_LEFT);
     C3D_RenderTarget *bot = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
 
+    /* ── romfs (carries pinyin_dict.bin for M7 IME) ── */
+    Result romfs_rc = romfsInit();
+    int romfs_ok   = R_SUCCEEDED(romfs_rc);
+
     /* ── Config ── */
     ssh_config_t cfg;
     int loaded = config_load(&cfg, CONFIG_PATH);
@@ -134,12 +139,15 @@ int main(int argc, char *argv[]) {
     terminal_t *term = terminal_init(R_TOP_COLS, R_TOP_ROWS);
     renderer_t *r    = renderer_init(top, bot);
     keyboard_t *kbd  = keyboard_init();
-    softkb_t   *kb   = softkb_init();
     /* Mascot lives in the bottom row (y=214..239, 26 px tall).  Clock
      * occupies x=2..67 on the left; mascot scampers in x=72..302 on
      * the right.  Crab is 14 px tall so y_top = 214 + (26-14)/2 = 220
      * vertically centers it in the row. */
     mascot_t   *mc   = mascot_init(72, 302, 220);
+    /* IME loads later (after the M7 banner pumps); softkb tolerates
+     * a NULL ime by falling back to passthrough in CN mode. */
+    ime_t      *ime  = NULL;
+    softkb_t   *kb   = softkb_init(NULL);
     if (!term || !r || !kbd || !kb || !mc) goto cleanup;
 
     if (net_init(err, sizeof(err)) != 0) {
@@ -149,17 +157,50 @@ int main(int argc, char *argv[]) {
     }
 
     /* Banner inside the terminal. */
+    terminal_write(term, "\x1b[36m3dssh M7\x1b[0m\r\n");
+    if (romfs_ok) {
+        terminal_write(term, "loading pinyin dictionary...\r\n");
+    } else {
+        terminal_write(term, "\x1b[33mromfs init failed — IME unavailable\x1b[0m\r\n");
+    }
+
+    /* Pump one frame so the user sees the loading banner during the
+     * (synchronous, ~5s) dict read.  The bottom screen still has the
+     * keyboard rendered — the badge and mascot work normally. */
+    {
+        C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+        C2D_TargetClear(top, C2D_Color32(0x1e, 0x1e, 0x2e, 0xff));
+        C2D_SceneBegin(top);
+        renderer_draw_terminal(r, term);
+        C2D_TargetClear(bot, C2D_Color32(0x18, 0x18, 0x25, 0xff));
+        C2D_SceneBegin(bot);
+        softkb_draw(kb, r, kbd);
+        C3D_FrameEnd(0);
+    }
+
+    /* Load the pinyin dict (~9 MB).  Failure here is non-fatal — we
+     * just leave ime NULL and softkb degrades CN mode to passthrough. */
+    if (romfs_ok) {
+        ime = ime_init("romfs:/pinyin_dict.bin");
+        if (ime) {
+            softkb_set_ime(kb, ime);
+            keyboard_set_ime(kbd, ime);
+            terminal_write(term, "\x1b[32mdictionary loaded.\x1b[0m\r\n");
+        } else {
+            terminal_write(term, "\x1b[31mdictionary load failed — IME disabled\x1b[0m\r\n");
+        }
+    }
+
     {
         char banner[160];
         snprintf(banner, sizeof(banner),
-                 "\x1b[36m3dssh M4\x1b[0m connecting to "
-                 "\x1b[33m%s@%s:%d\x1b[0m...\r\n",
+                 "connecting to \x1b[33m%s@%s:%d\x1b[0m...\r\n",
                  cfg.user, cfg.host, cfg.port);
         terminal_write(term, banner);
     }
 
-    /* Pump one frame so the user sees the banner before the (synchronous,
-     * 5-10s) RSA handshake blocks the main loop. */
+    /* Pump again so the user sees the loaded/connecting banners before
+     * the SSH handshake blocks the main loop. */
     {
         C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
         C2D_TargetClear(top, C2D_Color32(0x1e, 0x1e, 0x2e, 0xff));
@@ -297,11 +338,13 @@ idle_loop:
     net_fini();
 
 cleanup:
+    if (ime)  ime_free(ime);
     if (mc)   mascot_free(mc);
     if (kb)   softkb_free(kb);
     if (kbd)  keyboard_free(kbd);
     if (r)    renderer_free(r);
     if (term) terminal_free(term);
+    if (romfs_ok) romfsExit();
     C2D_Fini();
     C3D_Fini();
     gfxExit();

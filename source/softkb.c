@@ -175,9 +175,18 @@ struct softkb_t {
     uint8_t       recv_ring[32];
     int           recv_head;
     int           recv_count;
+
+    /* M7 IME: pinyin engine pointer (may be NULL if dict failed to load).
+     * The candidate-strip layout is recomputed each frame in
+     * draw_status_row and stored here so softkb_touch can hit-test
+     * tapped candidates back to indices. */
+    ime_t        *ime;
+    int           cand_box_x[IME_PAGE_SIZE];
+    int           cand_box_w[IME_PAGE_SIZE];
+    int           cand_box_n;            /* candidates currently visible */
 };
 
-softkb_t *softkb_init(void) {
+softkb_t *softkb_init(ime_t *ime) {
     softkb_t *kb = calloc(1, sizeof(*kb));
     if (!kb) return NULL;
     kb->page = PAGE_LETTERS;
@@ -186,10 +195,16 @@ softkb_t *softkb_init(void) {
     /* Far-past sentinel so the very first badge tap can never look
      * like the second half of a double-tap. */
     kb->badge_last_tap_frame = -1000;
+    kb->ime = ime;
     return kb;
 }
 
 void softkb_free(softkb_t *kb) { free(kb); }
+
+void softkb_set_ime(softkb_t *kb, ime_t *ime) {
+    if (!kb) return;
+    kb->ime = ime;
+}
 
 softkb_page_t softkb_current_page(const softkb_t *kb) {
     return kb ? kb->page : PAGE_LETTERS;
@@ -300,6 +315,22 @@ const char *softkb_touch(softkb_t *kb,
         return NULL;
     }
 
+    /* ── IME candidate strip: tap on a visible candidate commits it. ── */
+    if (kb->ime && ime_active(kb->ime) && ty < STATUS_H) {
+        for (int i = 0; i < kb->cand_box_n; i++) {
+            if (tx >= kb->cand_box_x[i] &&
+                tx <  kb->cand_box_x[i] + kb->cand_box_w[i]) {
+                /* ime_select clears the buffer; the returned pointer
+                 * stays alive for the dict's lifetime so we can pass
+                 * it through to the SSH writer without copying. */
+                return ime_select(kb->ime, i);
+            }
+        }
+        /* Tap landed in the strip but not on a candidate — swallow it
+         * so it doesn't activate a key behind. */
+        return NULL;
+    }
+
     /* ── Normal keyboard mode: hit-test keys, dispatch a byte. ── */
     int idx = hit_test(kb, tx, ty);
     if (idx < 0) {
@@ -313,6 +344,17 @@ const char *softkb_touch(softkb_t *kb,
     const softkey_t *layout = current_layout(kb, &n);
     const softkey_t *k = &layout[idx];
 
+    /* True iff we should route this tap through the IME instead of
+     * sending it raw.  CN mode + a-z key + no held modifier → IME.
+     * Modifiers (Shift/Ctrl/Alt) always bypass IME so Ctrl-C, Alt-b,
+     * etc. still work in CN mode. */
+    int route_to_ime =
+        kb->ime &&
+        keyboard_get_mode(kbd) == MODE_CN &&
+        !keyboard_shift_held(kbd) &&
+        !keyboard_ctrl_held(kbd) &&
+        !keyboard_alt_held(kbd);
+
     switch (k->kind) {
         case KIND_PAGE_TOGGLE:
         case KIND_PAGE_BTN:
@@ -321,7 +363,17 @@ const char *softkb_touch(softkb_t *kb,
         case KIND_SEQ:
             return k->seq;
         case KIND_SPACE:
+            /* In CN mode with an active pinyin buffer, space commits
+             * the first candidate (standard pinyin IME convention). */
+            if (route_to_ime && ime_active(kb->ime)) {
+                return ime_select(kb->ime, 0);
+            }
+            return keyboard_emit_for(kbd, k->base);
         case KIND_CHAR:
+            if (route_to_ime && k->base >= 'a' && k->base <= 'z') {
+                ime_input_letter(kb->ime, k->base);
+                return NULL;
+            }
             return keyboard_emit_for(kbd, k->base);
     }
     return NULL;
@@ -492,6 +544,66 @@ static uint32_t key_label_color_resting(const softkey_t *k) {
 
 /* ── status / candidate row ─────────────────────────────────────────── */
 
+#define COL_IME_PINYIN_FG    0xa6e3a1ff   /* pinyin buffer text — green */
+#define COL_IME_CANDIDATE_FG 0xcdd6f4ff   /* main candidate text */
+#define COL_IME_FIRST_HL     0x89b4fa30   /* faint blue under first cand */
+#define COL_IME_PAGE_HINT    0x6c7086ff   /* "1/4" page indicator */
+
+/* Lay out the IME bar: pinyin buffer + visible candidates within the
+ * candidate strip.  Records hit-test boxes into kb->cand_box_*.
+ * `strip_x` is the strip's left edge, `strip_end` is one past the
+ * right edge.  Returns how many candidates were rendered. */
+static int draw_ime_strip(softkb_t *kb,
+                          int strip_x, int strip_end, int strip_y) {
+    if (!kb->ime || !ime_active(kb->ime)) return 0;
+
+    /* Pinyin buffer — narrow font, dim green, with a separating dot. */
+    const char *buf = ime_buffer(kb->ime);
+    int x = strip_x + 4;
+    int y = strip_y + (STATUS_H - 4 - CELL_H) / 2;
+    renderer_draw_text_px(x, y, buf, COL_IME_PINYIN_FG);
+    x += renderer_utf8_text_width_px(buf);
+    renderer_draw_text_px(x, y, " ", COL_IME_PAGE_HINT);
+    x += CELL_W + 4;
+
+    /* Page hint "p/n" before the candidates if multi-page. */
+    int page_count = ime_page_count(kb->ime);
+    if (page_count > 1) {
+        char hint[24];
+        snprintf(hint, sizeof(hint), "%d/%d",
+                 ime_page(kb->ime) + 1, page_count);
+        renderer_draw_text_px(x, y, hint, COL_IME_PAGE_HINT);
+        x += renderer_utf8_text_width_px(hint) + 6;
+    }
+
+    /* Lay out the current page's candidates left-to-right.  Stop when
+     * the next one would overflow the strip — the trailing ones stay
+     * in the same page (D-pad → advances pages anyway). */
+    int n_in_page = ime_candidate_count(kb->ime);
+    int n_drawn   = 0;
+    for (int i = 0; i < n_in_page && n_drawn < IME_PAGE_SIZE; i++) {
+        const char *cand = ime_candidate(kb->ime, i);
+        if (!cand) break;
+        int w = renderer_utf8_text_width_px(cand);
+        /* +6 px gap between candidates */
+        if (x + w > strip_end - 2) break;
+        if (i == 0) {
+            /* faint highlight under the first candidate so users know
+             * Space commits it */
+            C2D_DrawRectSolid((float)(x - 2), (float)(strip_y + 2),
+                              0.072f, (float)(w + 4), (float)(STATUS_H - 8),
+                              rgba_to_c2d_(COL_IME_FIRST_HL));
+        }
+        renderer_draw_text_px(x, y, cand, COL_IME_CANDIDATE_FG);
+        kb->cand_box_x[n_drawn] = x - 2;
+        kb->cand_box_w[n_drawn] = w + 4;
+        n_drawn++;
+        x += w + 6;
+    }
+    kb->cand_box_n = n_drawn;
+    return n_drawn;
+}
+
 /* Layout (left → right):
  *   [2..2+slot_w]              left slot  (status indicator)
  *   [slot_w+6..320-slot_w-8]   candidate strip
@@ -502,7 +614,8 @@ static uint32_t key_label_color_resting(const softkey_t *k) {
  *
  * All labels rendered with renderer_draw_text_px so 3-char labels land
  * exactly on their geometric centers, no cell-grid snapping. */
-static void draw_status_row(renderer_t *r, const keyboard_t *kbd) {
+static void draw_status_row(softkb_t *kb, renderer_t *r,
+                            const keyboard_t *kbd) {
     const int slot_w = 3 * CELL_W + 4;     /* 22 px */
     const int slot_h = STATUS_H - 4;
     const int slot_y = 2;
@@ -514,9 +627,17 @@ static void draw_status_row(renderer_t *r, const keyboard_t *kbd) {
                       rgba_to_c2d_(COL_STATUS_BG));
 
     /* Candidate strip between the two slots. */
-    C2D_DrawRectSolid((float)(slot_w + 6), (float)slot_y, 0.06f,
-                      (float)(320 - 2 * slot_w - 12), (float)slot_h,
+    int strip_x   = slot_w + 6;
+    int strip_end = 320 - slot_w - 6;
+    C2D_DrawRectSolid((float)strip_x, (float)slot_y, 0.06f,
+                      (float)(strip_end - strip_x), (float)slot_h,
                       rgba_to_c2d_(COL_CANDIDATE_BG));
+
+    /* IME candidates over the strip (when buffer non-empty). */
+    kb->cand_box_n = 0;
+    if (kb && kb->ime && ime_active(kb->ime)) {
+        draw_ime_strip(kb, strip_x, strip_end, slot_y);
+    }
 
     /* ── Left slot: status indicator ─────────────────────────────────── */
     const char *status = kbd ? keyboard_status_label(kbd) : "   ";
@@ -559,7 +680,7 @@ static void draw_debug_screen(softkb_t *kb, renderer_t *r,
 
     /* Keep the status bar so the ENG/CHN badge is still visible/tappable
      * — that's how the user gets back out. */
-    draw_status_row(r, kbd);
+    draw_status_row(kb, r, kbd);
 
     /* Title + exit hint */
     renderer_draw_text_px(8, 40, "DEBUG", COL_STATUS_FG_HOLD);
@@ -628,7 +749,7 @@ void softkb_draw(softkb_t *kb, renderer_t *r, const keyboard_t *kbd) {
         return;
     }
 
-    draw_status_row(r, kbd);
+    draw_status_row(kb, r, kbd);
 
     int n;
     const softkey_t *layout = current_layout(kb, &n);

@@ -1,5 +1,6 @@
 #pragma once
 #include <3ds.h>
+#include "ime_pinyin.h"
 
 /*
  * Physical-button input layer for 3dssh M4.
@@ -56,10 +57,19 @@ typedef struct keyboard_t {
     /* Output byte buffer for one frame's worth of emission. */
     char out_buf[16];
     int  out_len;
+
+    /* M7: pinyin IME pointer (may be NULL).  When set and active, the
+     * B key does ime_backspace instead of emitting 0x7f, and D-pad
+     * left/right page through candidates instead of sending arrow keys. */
+    ime_t *ime;
 } keyboard_t;
 
 keyboard_t *keyboard_init(void);
 void        keyboard_free(keyboard_t *kbd);
+
+/* Wire the pinyin IME to the keyboard.  Pass NULL to disable.  Until
+ * this is called the keyboard runs in pure-passthrough M4 behavior. */
+void        keyboard_set_ime(keyboard_t *kbd, ime_t *ime);
 
 /* Per-frame physical-key handling.  Emits bytes for SELECT/A/B/D-pad and
  * sustained Circle Pad scroll/wheel events.  Modifier keys (L/Y/X) and

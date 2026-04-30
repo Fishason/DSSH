@@ -1,9 +1,10 @@
 #pragma once
 #include "renderer.h"
 #include "keyboard.h"
+#include "ime_pinyin.h"
 
 /*
- * On-screen touch keyboard for the 3DS bottom screen (M4).
+ * On-screen touch keyboard for the 3DS bottom screen (M4 + M7 IME).
  *
  * Two pages:
  *   PAGE_LETTERS   q w e r t y u i o p / a s d f g h j k l ' / z x c v b n m , . /
@@ -27,7 +28,13 @@ typedef enum {
 
 typedef struct softkb_t softkb_t;
 
-softkb_t *softkb_init(void);
+/* `ime` is the loaded pinyin IME engine (may be NULL if the dict
+ * failed to load — softkb degrades CN mode to direct passthrough).
+ * Pass NULL at startup and call softkb_set_ime(...) once the dict
+ * has finished loading; this lets main.c show a "loading..." banner
+ * during the ~5-second dict read. */
+softkb_t *softkb_init(ime_t *ime);
+void      softkb_set_ime(softkb_t *kb, ime_t *ime);
 void      softkb_free(softkb_t *kb);
 
 /* Render the current page + status row to the bottom screen.  Must be

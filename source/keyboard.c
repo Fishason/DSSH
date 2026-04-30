@@ -35,6 +35,11 @@ keyboard_t *keyboard_init(void) {
 
 void keyboard_free(keyboard_t *kbd) { free(kbd); }
 
+void keyboard_set_ime(keyboard_t *kbd, ime_t *ime) {
+    if (!kbd) return;
+    kbd->ime = ime;
+}
+
 /* ── byte emission helpers ─────────────────────────────────────────── */
 
 static const char *emit_seq(keyboard_t *k, const char *seq) {
@@ -151,6 +156,14 @@ const char *keyboard_handle_input(keyboard_t *kbd,
         }
         kbd->dpad_frames++;
         if (fire) {
+            /* IME mode: ←→ pages through candidates instead of sending
+             * arrow keys.  Up/Down still pass through normally. */
+            if (kbd->ime && ime_active(kbd->ime) &&
+                (dpad_active == KEY_DLEFT || dpad_active == KEY_DRIGHT)) {
+                if (dpad_active == KEY_DLEFT) ime_page_prev(kbd->ime);
+                else                          ime_page_next(kbd->ime);
+                return NULL;
+            }
             const char *seq;
             if      (dpad_active == KEY_DUP)    seq = "\x1b[A";
             else if (dpad_active == KEY_DDOWN)  seq = "\x1b[B";
@@ -168,20 +181,28 @@ const char *keyboard_handle_input(keyboard_t *kbd,
     }
     /* B → Backspace, with the same auto-repeat ramp as D-pad so holding
      * B for a couple seconds rapid-deletes (super useful in Claude Code's
-     * input editor). */
+     * input editor).  In IME mode, B chews the pinyin buffer instead. */
     if (keys_held & KEY_B) {
-        if (keys_down & KEY_B) {
+        int b_pressed_now = (keys_down & KEY_B) != 0;
+        int fire = 0;
+        if (b_pressed_now) {
             kbd->b_held_frames = 0;
             mark_event(kbd, "BSP");
-            return emit_byte(kbd, 0x7f);
-        }
-        kbd->b_held_frames++;
-        if (kbd->b_held_frames >= DPAD_INITIAL_DELAY) {
-            int phase = kbd->b_held_frames - DPAD_INITIAL_DELAY;
-            int period = dpad_repeat_period(phase);
-            if (period > 0 && phase % period == 0) {
-                return emit_byte(kbd, 0x7f);
+            fire = 1;
+        } else {
+            kbd->b_held_frames++;
+            if (kbd->b_held_frames >= DPAD_INITIAL_DELAY) {
+                int phase  = kbd->b_held_frames - DPAD_INITIAL_DELAY;
+                int period = dpad_repeat_period(phase);
+                if (period > 0 && phase % period == 0) fire = 1;
             }
+        }
+        if (fire) {
+            if (kbd->ime && ime_active(kbd->ime)) {
+                ime_backspace(kbd->ime);
+                return NULL;
+            }
+            return emit_byte(kbd, 0x7f);
         }
     } else {
         kbd->b_held_frames = 0;

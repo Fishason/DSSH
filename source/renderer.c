@@ -166,6 +166,26 @@ static uint32_t utf8_next(const char **s) {
     return cp;
 }
 
+/* Dispatches one codepoint to either the narrow or wide blit path
+ * and returns the pixel advance.  Used by every label helper so CJK
+ * candidates (M7's IME bar) render with the right cell width. */
+static int draw_codepoint_px(float fx, float fy, float z,
+                             uint32_t cp, u32 color) {
+    if (font_is_wide(cp)) {
+        int gi = font_wide_glyph_index(cp);
+        if (gi >= 0) {
+            draw_wide_glyph(fx, fy, z, gi, color);
+        } else {
+            /* Wide font lookup miss — fall back to the narrow notdef
+             * so the slot isn't visually empty. */
+            draw_glyph(fx, fy, z, font_glyph_index(cp), color);
+        }
+        return FONT_CELL_W * 2;
+    }
+    draw_glyph(fx, fy, z, font_glyph_index(cp), color);
+    return FONT_CELL_W;
+}
+
 void renderer_draw_text(renderer_t *r, int x_cells, int y_cells,
                         const char *text, uint32_t rgba) {
     (void)r;
@@ -176,8 +196,7 @@ void renderer_draw_text(renderer_t *r, int x_cells, int y_cells,
     const char *s = text;
     while (*s) {
         uint32_t cp = utf8_next(&s);
-        draw_glyph(fx, fy, 0.5f, font_glyph_index(cp), color);
-        fx += FONT_CELL_W;
+        fx += (float)draw_codepoint_px(fx, fy, 0.5f, cp, color);
     }
 }
 
@@ -189,8 +208,7 @@ void renderer_draw_text_px(int px, int py, const char *text, uint32_t rgba) {
     const char *s = text;
     while (*s) {
         uint32_t cp = utf8_next(&s);
-        draw_glyph(fx, fy, 0.5f, font_glyph_index(cp), color);
-        fx += FONT_CELL_W;
+        fx += (float)draw_codepoint_px(fx, fy, 0.5f, cp, color);
     }
 }
 
@@ -215,6 +233,17 @@ static void draw_glyph_scaled(float fx, float fy, float z,
             } else col++;
         }
     }
+}
+
+int renderer_utf8_text_width_px(const char *text) {
+    if (!text) return 0;
+    int w = 0;
+    const char *s = text;
+    while (*s) {
+        uint32_t cp = utf8_next(&s);
+        w += font_is_wide(cp) ? FONT_CELL_W * 2 : FONT_CELL_W;
+    }
+    return w;
 }
 
 void renderer_draw_text_px_scaled(int px, int py, const char *text,

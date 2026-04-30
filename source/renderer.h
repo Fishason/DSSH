@@ -41,6 +41,12 @@ void renderer_draw_text_px(int px, int py, const char *text, uint32_t rgba);
 void renderer_draw_text_px_scaled(int px, int py, const char *text,
                                   uint32_t rgba, int scale);
 
+/* Pixel width that renderer_draw_text_px would consume for the given
+ * UTF-8 string.  Each ASCII codepoint contributes FONT_CELL_W pixels;
+ * CJK / fullwidth codepoints contribute 2*FONT_CELL_W.  Used by the
+ * IME candidate strip layout to fit-test before drawing. */
+int  renderer_utf8_text_width_px(const char *text);
+
 /* Filled rect on bottom screen, cell-aligned. */
 void renderer_draw_rect_cells(renderer_t *r, int x_cells, int y_cells,
                               int w_cells, int h_cells, uint32_t rgba);
