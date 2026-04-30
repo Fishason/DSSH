@@ -2,75 +2,100 @@
 #include <3ds.h>
 
 /*
- * Physical-button input layer for 3dssh M3.
+ * Physical-button input layer for 3dssh M4.
  *
- * Maps 3DS hardware (D-pad, A/B/X/Y, L/R, START, SELECT, Circle Pad) to
- * SSH-bound byte sequences. Sticky Ctrl modifier driven by SELECT:
+ * Final key bindings (M4 design):
+ *   START   quit program
+ *   SELECT  → emit \x1b (Esc)
+ *   A       → emit \r  (Enter)
+ *   B       → emit 0x7f (Backspace)
+ *   Y       → Ctrl modifier  (hold-style: only updates flag, no direct emit)
+ *   X       → Alt  modifier  (hold-style)
+ *   L       → Shift modifier (hold-style)
+ *   R       → toggle IME mode (EN ↔ CN)
+ *   D-pad   → arrow keys with accelerating auto-repeat
+ *   Circle  → tmux mouse-wheel forwarding / local scrollback
  *
- *   OFF ──[SELECT]──> ARMED ──[next produced char]──> OFF
- *
- * Just two states. ARMED transforms the next character into Ctrl-X form
- * (one-shot) and reverts to OFF. There is no "lock" mode (the user
- * explicitly didn't want it).  L button is still a hold-style Ctrl
- * alternative (L+key always sends Ctrl-key regardless of sticky state).
- *
- * Circle Pad always scrolls the local terminal scrollback (no mode
- * toggle needed). Any other key snaps the view back to live output.
+ * The modifier keys (Y/X/L) don't produce any byte themselves — they
+ * just update flags that the soft keyboard (softkb.c) queries when
+ * dispatching a tapped letter.  That's why pressing Y on its own
+ * sends nothing; you have to press Y AND tap a screen letter.
  */
 
 typedef enum {
-    MOD_OFF = 0,
-    MOD_ARMED,
-} mod_state_t;
+    MODE_EN = 0,    /* English direct typing */
+    MODE_CN,        /* Chinese pinyin (M7 will route through IME; M4 = passthrough) */
+} ime_mode_t;
 
 typedef struct keyboard_t {
-    mod_state_t sticky_ctrl;
-    int         scroll_timer;   /* debounce: N frames between scroll steps */
-
-    /* D-pad auto-repeat: re-fire arrow sequences while a direction is held.
-     * dpad_last is the single direction key currently held (0 = none);
-     * dpad_frames counts how many frames in a row it has been held.  Reset
-     * to 0 when the user releases or switches directions.  Used by the
-     * auto-repeat ramp (initial fire, delay, accelerating repeat). */
+    /* D-pad auto-repeat state */
     u32 dpad_last;
     int dpad_frames;
+    /* Circle Pad scroll throttling */
+    int scroll_timer;
 
-    /* Output buffer for the byte sequence produced this frame. */
-    char  out_buf[16];
-    int   out_len;
+    /* IME mode toggled by R */
+    ime_mode_t mode;
+
+    /* Monotonic frame counter (incremented each handle_input call) */
+    int frame;
+
+    /* Modifier "is currently held" — mirrors keys_held bits */
+    int shift_held, ctrl_held, alt_held;
+    /* Frame stamp of most-recent press for each modifier (so we can
+     * pick the "most recent" modifier when several are held). */
+    int shift_press_f, ctrl_press_f, alt_press_f;
+
+    /* Last transient event for the status indicator (Enter/BS/Esc/R toggle).
+     * Shown for ~12 frames after the press, then fades. */
+    const char *last_event_label;   /* "ENT", "BSP", "ESC", "R→C", "R→E", NULL */
+    int         last_event_frame;
+
+    /* Output byte buffer for one frame's worth of emission. */
+    char out_buf[16];
+    int  out_len;
 } keyboard_t;
 
-/* Lifecycle. */
 keyboard_t *keyboard_init(void);
 void        keyboard_free(keyboard_t *kbd);
 
-/* Per-frame: examine input edge events, update sticky state, optionally
- * scroll the terminal, and produce a byte sequence to send over SSH.
+/* Per-frame physical-key handling.  Emits bytes for SELECT/A/B/D-pad and
+ * sustained Circle Pad scroll/wheel events.  Modifier keys (L/Y/X) and
+ * R only update internal state and return NULL.
  *
- * Returns: pointer to internal byte buffer with .out_len bytes ready to
- * write to SSH. Returns NULL if nothing to send this frame.
- *
- * The pointer is valid until the next call to keyboard_handle_input().
- *
- * Pass NULL for term to disable scrollback navigation entirely.
- */
+ * Returns a NUL-terminated byte sequence to send to SSH, or NULL if
+ * nothing to send this frame. */
 struct terminal_t;
 const char *keyboard_handle_input(keyboard_t *kbd,
                                   struct terminal_t *term,
                                   u32 keys_down, u32 keys_held,
                                   int circle_dy);
 
-/* For the status panel: short label of current sticky-Ctrl state. */
-const char *keyboard_mod_label(const keyboard_t *kbd);
+/* Modifier-state queries used by the soft keyboard. */
+int        keyboard_shift_held(const keyboard_t *kbd);
+int        keyboard_ctrl_held(const keyboard_t *kbd);
+int        keyboard_alt_held (const keyboard_t *kbd);
+ime_mode_t keyboard_get_mode (const keyboard_t *kbd);
 
-/* Apply the current sticky Ctrl state to a buffer in place.
+/* Status-indicator label.  Returns a pointer to a 3-char string (always
+ * exactly 3 chars + NUL) for the leftmost slot of the soft keyboard's
+ * top row.  Priority:
+ *   1) any held modifier        →  "SFT" / "CTL" / "ALT" (most recent)
+ *   2) transient event < 12 frames ago →  "ENT" / "BSP" / "ESC" / "R→C" / "R→E"
+ *   3) idle                      →  "   " (3 spaces) */
+const char *keyboard_status_label(const keyboard_t *kbd);
+
+/* Combine the currently-held physical modifiers with a base ASCII char
+ * (typically from a soft-keyboard tap) and return the byte sequence to
+ * send to SSH.
  *
- * ARMED  -> transform the first byte to its Ctrl- form, then drop to OFF.
- * LOCKED -> transform every byte (Ctrl is held until SELECT pressed again).
- * OFF    -> no-op.
+ * Mappings:
+ *   L + letter   → uppercase (a→A …)
+ *   L + digit    → no special handling (use page 2 for symbols)
+ *   Y + letter   → Ctrl-letter (a → 0x01 …)
+ *   Y + special  → Ctrl-form where applicable (Ctrl-[ = 0x1b, etc.)
+ *   X + char     → Alt-char = ESC then char (2-byte sequence)
+ *   none         → the literal char
  *
- * Used by the swkbd path in main.c so that pressing SELECT then opening
- * the system keyboard and typing 'c' produces Ctrl-C on the wire.
- *
- * Returns the (possibly unchanged) buffer length. */
-int keyboard_apply_modifiers(keyboard_t *kbd, char *buf, int len);
+ * Returns pointer to internal buffer, NULL on nonsensical combination. */
+const char *keyboard_emit_for(keyboard_t *kbd, char base);
