@@ -31,6 +31,8 @@ typedef struct keyboard_t {
     /* D-pad auto-repeat state */
     u32 dpad_last;
     int dpad_frames;
+    /* Backspace (B) auto-repeat state — same ramp as D-pad. */
+    int b_held_frames;
     /* Circle Pad scroll throttling */
     int scroll_timer;
 

@@ -163,10 +163,25 @@ const char *keyboard_handle_input(keyboard_t *kbd,
         if (term && term->sb_offset) terminal_scroll_view(term, -term->sb_offset);
         return emit_byte(kbd, '\r');
     }
-    /* B → Backspace */
-    if (keys_down & KEY_B) {
-        mark_event(kbd, "BSP");
-        return emit_byte(kbd, 0x7f);
+    /* B → Backspace, with the same auto-repeat ramp as D-pad so holding
+     * B for a couple seconds rapid-deletes (super useful in Claude Code's
+     * input editor). */
+    if (keys_held & KEY_B) {
+        if (keys_down & KEY_B) {
+            kbd->b_held_frames = 0;
+            mark_event(kbd, "BSP");
+            return emit_byte(kbd, 0x7f);
+        }
+        kbd->b_held_frames++;
+        if (kbd->b_held_frames >= DPAD_INITIAL_DELAY) {
+            int phase = kbd->b_held_frames - DPAD_INITIAL_DELAY;
+            int period = dpad_repeat_period(phase);
+            if (period > 0 && phase % period == 0) {
+                return emit_byte(kbd, 0x7f);
+            }
+        }
+    } else {
+        kbd->b_held_frames = 0;
     }
     /* X / Y / L are modifiers — no byte on their own; flags already updated. */
     return NULL;

@@ -27,6 +27,7 @@
 #include "renderer.h"
 #include "keyboard.h"
 #include "softkb.h"
+#include "audio.h"
 
 #define SOC_ALIGN       0x1000
 #define SOC_BUFFERSIZE  0x100000
@@ -110,11 +111,12 @@ int main(int argc, char *argv[]) {
     uint32_t status_color = COLOR_WARN;
     ssh_client_t *ssh = NULL;
 
-    /* ── Graphics init ── */
+    /* ── Graphics + audio init ── */
     gfxInitDefault();
     C3D_Init(C3D_DEFAULT_CMDBUF_SIZE);
     C2D_Init(32768);
     C2D_Prepare();
+    audio_init();   /* safe to call regardless of dsp firmware status */
     C3D_RenderTarget *top = C2D_CreateScreenTarget(GFX_TOP,    GFX_LEFT);
     C3D_RenderTarget *bot = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
 
@@ -252,6 +254,7 @@ cleanup:
     if (kbd)  keyboard_free(kbd);
     if (r)    renderer_free(r);
     if (term) terminal_free(term);
+    audio_exit();
     C2D_Fini();
     C3D_Fini();
     gfxExit();
