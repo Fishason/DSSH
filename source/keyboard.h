@@ -83,7 +83,7 @@ ime_mode_t keyboard_get_mode (const keyboard_t *kbd);
  * exactly 3 chars + NUL) for the leftmost slot of the soft keyboard's
  * top row.  Priority:
  *   1) any held modifier        →  "SFT" / "CTL" / "ALT" (most recent)
- *   2) transient event < 12 frames ago →  "ENT" / "BSP" / "ESC" / "R→C" / "R→E"
+ *   2) transient event < 12 frames ago →  "ENT" / "BSP" / "ESC" / "ENG" / "CHN"
  *   3) idle                      →  "   " (3 spaces) */
 const char *keyboard_status_label(const keyboard_t *kbd);
 

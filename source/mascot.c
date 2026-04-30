@@ -38,32 +38,41 @@ struct mascot_t {
 };
 
 #define CRAB_W   18
-#define CRAB_H   10
+#define CRAB_H   14
 #define HIT_PAD  4
 
 #define COL_BODY 0xee5050ff
 #define COL_EYE  0xffffffff
 
-/* Pixel art for the 8 fixed rows + leg row 8 + leg row 9 (frame 0).
+/* Pixel art for rows 0-11 (fixed) + rows 12-13 (legs, frame 0).
  * '@' = body fill, 'o' = white eye, ' ' = transparent.  Each row is
- * exactly CRAB_W chars + NUL. */
+ * exactly CRAB_W chars + NUL.
+ *
+ * The crab now fits the full 14 px height of the bottom row (with 6 px
+ * vertical padding once centered): high claws, round body, two visible
+ * eyes, six legs. */
 static const char *const crab_art[CRAB_H] = {
-    " @@           @@  ",
-    " @@           @@  ",
-    "  @           @   ",
-    "  @@@@@@@@@@@@@   ",
-    " @@@@@@@@@@@@@@@  ",
-    "@@@@o@@@@@@@@o@@@@",
-    "@@@@@@@@@@@@@@@@@@",
-    " @@@@@@@@@@@@@@@@ ",
-    " @ @  @@  @@  @ @ ",   /* legs frame 0, row 8 */
-    "@ @ @@@@  @@@@ @ @",   /* legs frame 0, row 9 */
+    "@@..............@@",   /* 0  claw fingertips */
+    "@@..............@@",   /* 1  */
+    ".@@............@@.",   /* 2  claw arms angle in */
+    "..@@..........@@..",   /* 3  */
+    "...@@@@@@@@@@@@...",   /* 4  body top arc */
+    "..@@@@@@@@@@@@@@..",   /* 5  */
+    ".@@@@@@@@@@@@@@@@.",   /* 6  */
+    "@@@@o@@@@@@@@o@@@@",   /* 7  eye row */
+    "@@@@@@@@@@@@@@@@@@",   /* 8  widest */
+    "@@@@@@@@@@@@@@@@@@",   /* 9  */
+    ".@@@@@@@@@@@@@@@@.",   /* 10 bottom narrows */
+    "..@@@@@@@@@@@@@@..",   /* 11 */
+    ".@.@.@..@@..@.@.@.",   /* 12 legs frame 0 */
+    "@..@.@.@..@.@.@..@",   /* 13 legs frame 0 */
 };
 
-/* Frame 1 swaps the leg row patterns — gives a small vertical shuffle. */
+/* Frame 1 swaps the leg row patterns — gives a small "scuttle" wiggle
+ * without needing a fully separate sprite. */
 static const char *const crab_legs_alt[2] = {
-    "@ @ @@@@  @@@@ @ @",   /* row 8 in frame 1 */
-    " @ @  @@  @@  @ @ ",   /* row 9 in frame 1 */
+    "@..@.@.@..@.@.@..@",   /* row 12 in frame 1 */
+    ".@.@.@..@@..@.@.@.",   /* row 13 in frame 1 */
 };
 
 static u32 rgba_to_c2d(uint32_t rgba) {
@@ -159,10 +168,13 @@ void mascot_draw(mascot_t *m) {
     u32 body = rgba_to_c2d(COL_BODY);
     u32 eye  = rgba_to_c2d(COL_EYE);
 
+    /* Legs occupy the bottom 2 rows of the 14-row crab; everything
+     * above is static body art. */
+    const int LEG_ROW0 = CRAB_H - 2;
     for (int row = 0; row < CRAB_H; row++) {
         const char *src;
-        if (row >= 8 && m->anim_frame == 1)
-            src = crab_legs_alt[row - 8];
+        if (row >= LEG_ROW0 && m->anim_frame == 1)
+            src = crab_legs_alt[row - LEG_ROW0];
         else
             src = crab_art[row];
         for (int col = 0; col < CRAB_W; col++) {

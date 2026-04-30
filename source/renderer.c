@@ -163,6 +163,43 @@ void renderer_draw_text_px(int px, int py, const char *text, uint32_t rgba) {
     }
 }
 
+/* Scaled glyph blit: same bit-walking as draw_glyph but each lit run
+ * becomes a (run × scale) × scale rect.  Drawn at z=0.85 so the popup
+ * bubble's label sits above the key but below any later overlay. */
+static void draw_glyph_scaled(float fx, float fy, float z,
+                              int glyph_idx, u32 color, int scale) {
+    if (glyph_idx < 0 || glyph_idx >= FONT_NGLYPHS) return;
+    const uint8_t *rows = font_glyphs[glyph_idx];
+    for (int row = 0; row < FA_CELL_H; row++) {
+        uint8_t bits = rows[row];
+        if (!bits) continue;
+        int col = 0;
+        while (col < FA_CELL_W) {
+            if (bits & (1 << (FA_CELL_W - 1 - col))) {
+                int start = col;
+                while (col < FA_CELL_W && (bits & (1 << (FA_CELL_W - 1 - col))))
+                    col++;
+                C2D_DrawRectSolid(fx + start * scale, fy + row * scale, z,
+                                  (col - start) * scale, scale, color);
+            } else col++;
+        }
+    }
+}
+
+void renderer_draw_text_px_scaled(int px, int py, const char *text,
+                                  uint32_t rgba, int scale) {
+    if (!text || scale <= 0) return;
+    u32 color = rgba_to_c2d(rgba);
+    float fx = (float)px;
+    float fy = (float)py;
+    int step = FONT_CELL_W * scale;
+    for (const char *s = text; *s; s++) {
+        unsigned char c = (unsigned char)*s;
+        draw_glyph_scaled(fx, fy, 0.85f, font_glyph_index(c), color, scale);
+        fx += step;
+    }
+}
+
 void renderer_draw_rect_cells(renderer_t *r, int x_cells, int y_cells,
                               int w_cells, int h_cells, uint32_t rgba) {
     (void)r;

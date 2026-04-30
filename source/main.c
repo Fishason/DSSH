@@ -135,9 +135,11 @@ int main(int argc, char *argv[]) {
     renderer_t *r    = renderer_init(top, bot);
     keyboard_t *kbd  = keyboard_init();
     softkb_t   *kb   = softkb_init();
-    /* Mascot lives in the bottom row (y=214..239).  Clock occupies
-     * x=2..67 on the left, mascot scampers in x=72..302 on the right. */
-    mascot_t   *mc   = mascot_init(72, 302, 216);
+    /* Mascot lives in the bottom row (y=214..239, 26 px tall).  Clock
+     * occupies x=2..67 on the left; mascot scampers in x=72..302 on
+     * the right.  Crab is 14 px tall so y_top = 214 + (26-14)/2 = 220
+     * vertically centers it in the row. */
+    mascot_t   *mc   = mascot_init(72, 302, 220);
     if (!term || !r || !kbd || !kb || !mc) goto cleanup;
 
     if (net_init(err, sizeof(err)) != 0) {

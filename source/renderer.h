@@ -35,6 +35,12 @@ void renderer_draw_text(renderer_t *r, int x_cells, int y_cells,
  * key cannot be exactly centered on a 6 px cell grid). */
 void renderer_draw_text_px(int px, int py, const char *text, uint32_t rgba);
 
+/* Same as renderer_draw_text_px but each glyph pixel is rendered as a
+ * scale×scale block.  Used for the iOS-style key-press popup bubble
+ * which shows the tapped character at 2× normal size. */
+void renderer_draw_text_px_scaled(int px, int py, const char *text,
+                                  uint32_t rgba, int scale);
+
 /* Filled rect on bottom screen, cell-aligned. */
 void renderer_draw_rect_cells(renderer_t *r, int x_cells, int y_cells,
                               int w_cells, int h_cells, uint32_t rgba);
