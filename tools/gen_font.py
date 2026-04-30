@@ -40,6 +40,9 @@ for cp in range(0x20, 0x7F):
     CHAR_MAP[cp] = cp - 0x20  # 0..94
 
 special_narrow = [
+    # General Punctuation: em dash —, en dash –, ellipsis …, curly quotes,
+    # bullets, prime, etc.  Heavy use in Chinese text and Markdown output.
+    *range(0x2000, 0x2070),
     # Box drawing (single + double lines)
     *range(0x2500, 0x2580),
     # Block elements
@@ -56,7 +59,7 @@ special_narrow = [
     *range(0x2700, 0x27C0),
     # Math operators
     *range(0x2200, 0x2300),
-    # Misc Technical
+    # Misc Technical (incl. ⏵⏸⏯ play/pause)
     *range(0x2300, 0x2400),
     # Enclosed Alphanumerics ①②③ ...
     *range(0x2460, 0x2500),
