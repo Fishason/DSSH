@@ -9,6 +9,10 @@ build/
 *.icn
 *.o
 
+# CIA build assets (banner + silent audio).  icon.png stays in the
+# tree so plain `make` produces a 3dsx with the proper icon.
+cia_assets/
+
 # Generated assets
 source/font_data.c
 source/font_data.h

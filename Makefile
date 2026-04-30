@@ -104,7 +104,7 @@ ifneq ($(ROMFS),)
 	export _3DSXFLAGS += --romfs=$(CURDIR)/$(ROMFS)
 endif
 
-.PHONY: $(BUILD) clean all ime-dict test-ime
+.PHONY: $(BUILD) clean all ime-dict test-ime cia cia-tools cia-clean
 
 all: $(BUILD)
 
@@ -117,6 +117,64 @@ ime-dict:
 # Host-side smoke test for the IME engine — much faster than 3dslink.
 test-ime:
 	@bash tools/test_ime.sh
+
+# ── M9: CIA packaging ───────────────────────────────────────────────
+#
+# `make cia` produces DSSH.cia from the already-built ELF + romfs.
+# Pipeline: gen_cia_assets.py → bannertool makesmdh / makebanner →
+# makerom -f cia.  bannertool + makerom live in $HOME/bin (install via
+# `make cia-tools` once); we put $HOME/bin first on PATH so the rule
+# works in a fresh shell with no system-wide install.
+CIA_BIN          := $(HOME)/bin
+CIA_PATH_PREPEND := PATH=$(CIA_BIN):$$PATH
+CIA_ASSETS       := $(CURDIR)/cia_assets
+CIA_TARGET       := $(CURDIR)/DSSH.cia
+
+cia-tools:
+	@bash tools/install_cia_tools.sh
+
+# Generate icon (project root, used by the .3dsx too) + banner +
+# silent.wav (CIA-only) from the source 162x102 logo.
+icon.png $(CIA_ASSETS)/banner.png $(CIA_ASSETS)/silent.wav: \
+		tools/gen_cia_assets.py 69633.PNG
+	@python3 tools/gen_cia_assets.py
+	@test -f $(CIA_ASSETS)/silent.wav || python3 -c "import wave,struct; \
+		w=wave.open('$(CIA_ASSETS)/silent.wav','wb'); \
+		w.setnchannels(2); w.setsampwidth(2); w.setframerate(22050); \
+		w.writeframes(b'\\\\x00'*44100); w.close()"
+
+# Run bannertool to package the SMDH (icon + metadata) and banner
+# (selected-card image + audio).
+$(BUILD)/dssh.smdh: icon.png
+	@$(CIA_PATH_PREPEND) bannertool makesmdh \
+		-s "DSSH" \
+		-l "DSSH — SSH client with Chinese IME" \
+		-p "exdekotive" \
+		-i icon.png \
+		-o $@ >/dev/null
+
+$(BUILD)/dssh.bnr: $(CIA_ASSETS)/banner.png $(CIA_ASSETS)/silent.wav
+	@$(CIA_PATH_PREPEND) bannertool makebanner \
+		-i $(CIA_ASSETS)/banner.png \
+		-a $(CIA_ASSETS)/silent.wav \
+		-o $@ >/dev/null
+
+# The CIA depends on the ELF, the SMDH, the banner, the RSF, and the
+# romfs blob (pinyin dict).  makerom rebuilds everything every time;
+# romfs is read fresh so any dict change picks up automatically.
+$(CIA_TARGET): $(OUTPUT).elf $(BUILD)/dssh.smdh $(BUILD)/dssh.bnr app.rsf \
+		romfs/pinyin_dict.bin
+	@$(CIA_PATH_PREPEND) makerom \
+		-f cia -target t \
+		-elf $(OUTPUT).elf -rsf app.rsf \
+		-icon $(BUILD)/dssh.smdh -banner $(BUILD)/dssh.bnr \
+		-o $@
+	@echo "built ... $(notdir $@)"
+
+cia: $(CIA_TARGET)
+
+cia-clean:
+	@rm -rf $(CIA_ASSETS) icon.png $(BUILD)/dssh.smdh $(BUILD)/dssh.bnr $(CIA_TARGET)
 
 $(BUILD):
 	@mkdir -p $@
