@@ -98,12 +98,13 @@ const char *keyboard_handle_input(keyboard_t *kbd,
         return emit_byte(kbd, '\x1b');
     }
 
-    /* R → toggle IME mode.  Transient label flashes the *new* mode in
-     * the same 3-letter ASCII style as the right-side mode badge so
-     * the indicator never widens or uses Unicode arrows. */
+    /* R → toggle IME mode.  Transient label "R→C" / "R→E" reads as
+     * "R toggles to CN / EN".  Three display columns wide (R + arrow
+     * + letter); the renderer is UTF-8 aware so the arrow draws
+     * correctly. */
     if (keys_down & KEY_R) {
         kbd->mode = (kbd->mode == MODE_EN) ? MODE_CN : MODE_EN;
-        mark_event(kbd, kbd->mode == MODE_CN ? "CHN" : "ENG");
+        mark_event(kbd, kbd->mode == MODE_CN ? "R→C" : "R→E");
         return NULL;
     }
 

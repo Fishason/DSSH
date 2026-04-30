@@ -137,6 +137,35 @@ void renderer_draw_terminal(renderer_t *r, terminal_t *term) {
     }
 }
 
+/* Pull one UTF-8 codepoint from *s, advance *s past it.  Bytes that
+ * don't form a valid sequence yield U+FFFD and advance by 1 so we
+ * never loop forever.  Used only by these label helpers — the SSH
+ * terminal path has its own decoder in terminal.c. */
+static uint32_t utf8_next(const char **s) {
+    const unsigned char *p = (const unsigned char *)*s;
+    unsigned char b0 = *p;
+    uint32_t cp;
+    int extra;
+    if (b0 < 0x80)      { cp = b0;          extra = 0; }
+    else if (b0 < 0xC0) { *s = (const char *)(p + 1); return 0xFFFD; }
+    else if (b0 < 0xE0) { cp = b0 & 0x1F;   extra = 1; }
+    else if (b0 < 0xF0) { cp = b0 & 0x0F;   extra = 2; }
+    else if (b0 < 0xF8) { cp = b0 & 0x07;   extra = 3; }
+    else                { *s = (const char *)(p + 1); return 0xFFFD; }
+    p++;
+    for (int i = 0; i < extra; i++) {
+        if ((*p & 0xC0) != 0x80) {
+            /* truncated/invalid — stop here, emit replacement. */
+            *s = (const char *)p;
+            return 0xFFFD;
+        }
+        cp = (cp << 6) | (*p & 0x3F);
+        p++;
+    }
+    *s = (const char *)p;
+    return cp;
+}
+
 void renderer_draw_text(renderer_t *r, int x_cells, int y_cells,
                         const char *text, uint32_t rgba) {
     (void)r;
@@ -144,9 +173,10 @@ void renderer_draw_text(renderer_t *r, int x_cells, int y_cells,
     u32 color = rgba_to_c2d(rgba);
     float fx = x_cells * FONT_CELL_W;
     float fy = y_cells * FONT_CELL_H;
-    for (const char *s = text; *s; s++) {
-        unsigned char c = (unsigned char)*s;
-        draw_glyph(fx, fy, 0.5f, font_glyph_index(c), color);
+    const char *s = text;
+    while (*s) {
+        uint32_t cp = utf8_next(&s);
+        draw_glyph(fx, fy, 0.5f, font_glyph_index(cp), color);
         fx += FONT_CELL_W;
     }
 }
@@ -156,9 +186,10 @@ void renderer_draw_text_px(int px, int py, const char *text, uint32_t rgba) {
     u32 color = rgba_to_c2d(rgba);
     float fx = (float)px;
     float fy = (float)py;
-    for (const char *s = text; *s; s++) {
-        unsigned char c = (unsigned char)*s;
-        draw_glyph(fx, fy, 0.5f, font_glyph_index(c), color);
+    const char *s = text;
+    while (*s) {
+        uint32_t cp = utf8_next(&s);
+        draw_glyph(fx, fy, 0.5f, font_glyph_index(cp), color);
         fx += FONT_CELL_W;
     }
 }
@@ -193,9 +224,10 @@ void renderer_draw_text_px_scaled(int px, int py, const char *text,
     float fx = (float)px;
     float fy = (float)py;
     int step = FONT_CELL_W * scale;
-    for (const char *s = text; *s; s++) {
-        unsigned char c = (unsigned char)*s;
-        draw_glyph_scaled(fx, fy, 0.85f, font_glyph_index(c), color, scale);
+    const char *s = text;
+    while (*s) {
+        uint32_t cp = utf8_next(&s);
+        draw_glyph_scaled(fx, fy, 0.85f, font_glyph_index(cp), color, scale);
         fx += step;
     }
 }

@@ -79,12 +79,15 @@ int        keyboard_ctrl_held(const keyboard_t *kbd);
 int        keyboard_alt_held (const keyboard_t *kbd);
 ime_mode_t keyboard_get_mode (const keyboard_t *kbd);
 
-/* Status-indicator label.  Returns a pointer to a 3-char string (always
- * exactly 3 chars + NUL) for the leftmost slot of the soft keyboard's
- * top row.  Priority:
+/* Status-indicator label.  Returns a NUL-terminated UTF-8 string that
+ * renders to exactly 3 display cells in the leftmost slot of the soft
+ * keyboard's top row.  Priority:
  *   1) any held modifier        →  "SFT" / "CTL" / "ALT" (most recent)
- *   2) transient event < 12 frames ago →  "ENT" / "BSP" / "ESC" / "ENG" / "CHN"
- *   3) idle                      →  "   " (3 spaces) */
+ *   2) transient event < 12 frames ago →  "ENT" / "BSP" / "ESC" / "R→C" / "R→E"
+ *   3) idle                      →  "   " (3 spaces)
+ *
+ * Note that "R→C" is 5 bytes (UTF-8 encodes → as E2 86 92) but renders
+ * as 3 display columns — renderer_draw_text_px iterates by codepoint. */
 const char *keyboard_status_label(const keyboard_t *kbd);
 
 /* Combine the currently-held physical modifiers with a base ASCII char
