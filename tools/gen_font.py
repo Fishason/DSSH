@@ -157,7 +157,56 @@ print(f"wide   glyphs target: {NGLYPHS_WIDE}")
 
 
 # ── render one glyph to a binary row list ──────────────────────
-def render_rows(cp, fnt, w, h):
+#
+# Two strategies:
+#   render_rows_baseline (used for ASCII / monospace narrow text):
+#     draw at (x_center, baseline_oy) using the FONT's ascent metric so
+#     every glyph in the same font shares one baseline.  This is what
+#     real text renderers do; centering by ink-bbox would make
+#     descender chars (g/p/y) and tall caps (H) drift independently and
+#     a row of text looks "wonky" (用户反馈：歪七扭八).
+#
+#   render_rows_centered (for symbol / icon fonts where bbox-centering
+#     looks better than baseline alignment, e.g. ◻ / arrows / Powerline):
+#     centers the ink box in the cell.
+
+def render_rows_pixels_to_bits(img, w, h):
+    px = list(img.getdata())
+    rows = []
+    for r in range(h):
+        bits = 0
+        for c in range(w):
+            if px[r * w + c] >= THRESHOLD:
+                bits |= 1 << (w - 1 - c)
+        rows.append(bits)
+    return rows
+
+
+def render_rows_baseline(cp, fnt, w, h):
+    """Baseline-anchored render. Best for ASCII/monospace continuous text.
+
+    Pillow's draw.text((x,y)) places the text top at y and the baseline at
+    y + ascent.  To put the baseline at cell row (h - descent) (leaving
+    enough room for a full descender), solve for y:
+        y + ascent = h - descent
+        y = h - descent - ascent
+    """
+    img = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(img)
+    try:
+        ascent, descent = fnt.getmetrics()
+        # Leave at least 1 row for descender (if font has any), at most descent.
+        descent_room = max(1, descent) if descent > 0 else 0
+        oy = h - descent_room - ascent
+        # Monospace fonts have uniform advance — no horizontal centering needed.
+        draw.text((0, oy), chr(cp), font=fnt, fill=255)
+    except Exception:
+        pass
+    return render_rows_pixels_to_bits(img, w, h)
+
+
+def render_rows_centered(cp, fnt, w, h):
+    """Ink-bbox centered render. Best for isolated symbols / icons."""
     img = Image.new("L", (w, h), 0)
     draw = ImageDraw.Draw(img)
     try:
@@ -172,20 +221,19 @@ def render_rows(cp, fnt, w, h):
             draw.text((0, 0), chr(cp), font=fnt, fill=255)
     except Exception:
         pass
-    px = list(img.getdata())
-    rows = []
-    for r in range(h):
-        bits = 0
-        for c in range(w):
-            if px[r * w + c] >= THRESHOLD:
-                bits |= 1 << (w - 1 - c)
-        rows.append(bits)
-    return rows
+    return render_rows_pixels_to_bits(img, w, h)
+
+
+# Default for narrow path: baseline-anchored when the source is the
+# Terminus monospace bitmap; ink-centered when the source is the symbol
+# fallback (DejaVu Sans Mono / Zpix).  Helps mixed-font rows look uniform.
+def render_rows(cp, fnt, w, h):
+    return render_rows_baseline(cp, fnt, w, h)
 
 
 # Detect Terminus' "not-defined" placeholder so we treat it as empty and fall
 # back to a different font.
-notdef_rows = render_rows(0xFFFF, font_narrow, CELL_W, CELL_H)
+notdef_rows = render_rows_baseline(0xFFFF, font_narrow, CELL_W, CELL_H)
 
 
 def is_empty_or_notdef(rows):
@@ -193,18 +241,18 @@ def is_empty_or_notdef(rows):
 
 
 # ── narrow glyph generation ────────────────────────────────────
+# Fallback chain:
+#   Terminus baseline-anchored (perfect for ASCII + box-draw, monospace)
+#   -> DejaVu ink-centered (fallback for symbols/arrows)
+#   -> Zpix ink-centered (geometric shapes ○●■□▲▼)
 glyph_bitmaps = [[0] * CELL_H for _ in range(NGLYPHS)]
 empty_cps = set()
 for cp, atlas_idx in CHAR_MAP.items():
-    # Fallback chain for narrow glyph rendering:
-    #   Terminus (true bitmap, perfect for ASCII + box-draw)
-    #   -> DejaVu Sans Mono (broad symbol coverage at 12px)
-    #   -> Zpix (catches geometric shapes ○●■□▲▼ that the above lack)
-    rows = render_rows(cp, font_narrow, CELL_W, CELL_H)
+    rows = render_rows_baseline(cp, font_narrow, CELL_W, CELL_H)
     if cp > 0x7E and is_empty_or_notdef(rows) and font_symbols is not None:
-        rows = render_rows(cp, font_symbols, CELL_W, CELL_H)
+        rows = render_rows_centered(cp, font_symbols, CELL_W, CELL_H)
     if cp > 0x7E and all(b == 0 for b in rows) and font_wide is not None:
-        rows = render_rows(cp, font_wide, CELL_W, CELL_H)
+        rows = render_rows_centered(cp, font_wide, CELL_W, CELL_H)
     if all(b == 0 for b in rows) and cp > 0x7E:
         empty_cps.add(cp)
     else:
@@ -215,11 +263,12 @@ for cp in empty_cps:
 print(f"  narrow filled: {len(CHAR_MAP)}  empty dropped: {len(empty_cps)}")
 
 
-# ── wide glyph generation (M3: punctuation only) ───────────────
+# ── wide glyph generation (CJK via Zpix at native 12pt) ────────
+# Use baseline-anchored render so the visual baseline matches the narrow row.
 wide_bitmaps = [[0] * CELL_H for _ in range(NGLYPHS_WIDE)]
 wide_empty = set()
 for cp, atlas_idx in WIDE_CHAR_MAP.items():
-    rows = render_rows(cp, font_wide or font_narrow, CELL_W2, CELL_H)
+    rows = render_rows_baseline(cp, font_wide or font_narrow, CELL_W2, CELL_H)
     if all(b == 0 for b in rows):
         wide_empty.add(cp)
     else:

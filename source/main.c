@@ -122,31 +122,25 @@ static void draw_status(renderer_t *r, const ssh_config_t *cfg,
     /* Status line */
     renderer_draw_text(r, 1, 2, status_text, status_color);
 
-    /* Modifier state */
-    snprintf(line, sizeof(line), "Sticky: %s   Scroll: %s",
-             keyboard_mod_label(kbd),
-             keyboard_in_scroll_mode(kbd) ? "ON " : "off");
+    /* Modifier state — only line that animates so the user can confirm
+     * SELECT did something. */
+    snprintf(line, sizeof(line), "Ctrl: %s", keyboard_mod_label(kbd));
     renderer_draw_text(r, 1, 4, line,
-                       keyboard_in_scroll_mode(kbd) ? COLOR_ACCENT : COLOR_DIM);
+                       (kbd && kbd->sticky_ctrl == MOD_ARMED)
+                           ? COLOR_ACCENT : COLOR_DIM);
 
-    /* Scrollback indicator */
-    if (term) {
-        snprintf(line, sizeof(line), "Scrollback: -%d/%d",
-                 term->sb_offset, term->sb_size);
-        renderer_draw_text(r, 1, 5, line, COLOR_DIM);
-    }
+    /* Key legend — minimal, "real terminal" experience: scrolling and
+     * history are tmux's job, not ours. */
+    renderer_draw_text(r, 1,  7, "KEY LEGEND", COLOR_ACCENT);
+    renderer_draw_text(r, 1,  8, "  A    Enter         D-pad arrows", COLOR_FG);
+    renderer_draw_text(r, 1,  9, "  B    Backspace     L+key Ctrl-key", COLOR_FG);
+    renderer_draw_text(r, 1, 10, "  X    type a line   SELECT once-Ctrl", COLOR_FG);
+    renderer_draw_text(r, 1, 11, "  STRT quit          Stick: glance back", COLOR_FG);
 
-    /* Key legend */
-    renderer_draw_text(r, 1,  8, "KEY LEGEND", COLOR_ACCENT);
-    renderer_draw_text(r, 1,  9, "  A    Enter        D-pad arrows", COLOR_FG);
-    renderer_draw_text(r, 1, 10, "  B    Backspace    SELECT sticky-Ctrl", COLOR_FG);
-    renderer_draw_text(r, 1, 11, "  X    type (swkbd) Y    scroll mode", COLOR_FG);
-    renderer_draw_text(r, 1, 12, "  STRT quit         Stick: scroll", COLOR_FG);
-
-    renderer_draw_text(r, 1, 14, "TIPS", COLOR_ACCENT);
-    renderer_draw_text(r, 1, 15, "  Ctrl-C: SELECT then X+'c' (one-shot)", COLOR_FG);
-    renderer_draw_text(r, 1, 16, "  Ctrl-lock: SELECT twice  off: SELECT 3x", COLOR_FG);
-    renderer_draw_text(r, 1, 17, "  tmux scroll: Ctrl-B then [ (server side)", COLOR_FG);
+    renderer_draw_text(r, 1, 13, "TIPS", COLOR_ACCENT);
+    renderer_draw_text(r, 1, 14, "  Ctrl-C: SELECT then X+'c'", COLOR_FG);
+    renderer_draw_text(r, 1, 15, "  tmux history: prefix [ (Ctrl-B then [)", COLOR_FG);
+    renderer_draw_text(r, 1, 16, "  any key auto-snaps view to live", COLOR_DIM);
 
     renderer_draw_text(r, 1, 19, "M4 will add a touch keyboard.", COLOR_DIM);
 }
@@ -255,17 +249,19 @@ idle_loop:
                 }
             }
 
-            /* Physical key input */
+            /* Physical key input. Any produced byte snaps the local view
+             * back to live output (so the user always sees their command
+             * echo even if they were peeking at scrollback). */
             const char *out = keyboard_handle_input(kbd, term, down, held, cpad.dy);
             if (out && ssh && ssh_is_connected(ssh)) {
+                if (term->sb_offset != 0) terminal_scroll_view(term, -term->sb_offset);
                 ssh_write(ssh, out, (int)strlen(out));
             }
 
             /* X = pop swkbd for free-form text entry (replaced in M4). The
              * sticky Ctrl modifier set via SELECT is applied here too: ARMED
              * Ctrl-transforms the first typed char (so SELECT -> X -> 'c'
-             * sends Ctrl-C); LOCKED transforms every char until SELECT
-             * cycles back to OFF. */
+             * sends Ctrl-C). */
             if ((down & KEY_X) && ssh && ssh_is_connected(ssh)) {
                 if (prompt_swkbd("type a line", ibuf, sizeof(ibuf))) {
                     int n = (int)strlen(ibuf);

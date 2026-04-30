@@ -48,9 +48,7 @@ static const char *emit_byte(keyboard_t *k, char c) {
 /* Decide the byte for a "letter key" press, possibly applying Ctrl based on
  * sticky state or hold-L. Updates sticky state on consume. */
 static const char *letter_with_modifiers(keyboard_t *k, char base, int l_held) {
-    int apply_ctrl = l_held
-                  || k->sticky_ctrl == MOD_LOCKED
-                  || k->sticky_ctrl == MOD_ARMED;
+    int apply_ctrl = l_held || k->sticky_ctrl == MOD_ARMED;
     if (apply_ctrl) {
         char c = to_ctrl(base);
         if (k->sticky_ctrl == MOD_ARMED) k->sticky_ctrl = MOD_OFF; /* one-shot */
@@ -67,30 +65,18 @@ const char *keyboard_handle_input(keyboard_t *kbd,
     if (!kbd) return NULL;
     kbd->out_len = 0;
 
-    /* SELECT cycles the sticky Ctrl state machine. */
+    /* SELECT toggles ARMED. Press once to arm Ctrl for the next char,
+     * press again to cancel. */
     if (keys_down & KEY_SELECT) {
-        switch (kbd->sticky_ctrl) {
-            case MOD_OFF:    kbd->sticky_ctrl = MOD_ARMED;  break;
-            case MOD_ARMED:  kbd->sticky_ctrl = MOD_LOCKED; break;
-            case MOD_LOCKED: kbd->sticky_ctrl = MOD_OFF;    break;
-        }
+        kbd->sticky_ctrl = (kbd->sticky_ctrl == MOD_OFF) ? MOD_ARMED : MOD_OFF;
         return NULL;
     }
 
-    /* Y toggles scrollback navigation mode. */
-    if (keys_down & KEY_Y) {
-        kbd->scroll_mode = !kbd->scroll_mode;
-        if (!kbd->scroll_mode && term) {
-            /* leaving scroll mode: snap back to bottom */
-            terminal_scroll_view(term, -term->sb_offset);
-        }
-        return NULL;
-    }
-
-    /* Circle Pad in scroll mode -> scrollback, throttled so a sustained push
-     * scrolls roughly 12 lines/sec (otherwise 60 fps × 1 line = whole 500-row
-     * scrollback in 8 seconds). */
-    if (kbd->scroll_mode && term && (circle_dy > 50 || circle_dy < -50)) {
+    /* Circle Pad always scrolls the local scrollback buffer (no mode toggle).
+     * Throttled so a sustained push scrolls ~12 lines/sec.  Any subsequent
+     * key press will snap the view back to the bottom (handled in main.c
+     * via terminal_scroll_view(-sb_offset) after every produced byte). */
+    if (term && (circle_dy > 50 || circle_dy < -50)) {
         if (++kbd->scroll_timer >= 5) {
             kbd->scroll_timer = 0;
             terminal_scroll_view(term, circle_dy > 0 ? 1 : -1);
@@ -99,9 +85,6 @@ const char *keyboard_handle_input(keyboard_t *kbd,
     } else {
         kbd->scroll_timer = 0;
     }
-
-    /* Outside scroll mode: any output should snap the view to the bottom so
-     * the user sees what they typed. We do that lazily after producing a key. */
 
     int l_held = (keys_held & KEY_L) ? 1 : 0;
 
@@ -142,35 +125,15 @@ const char *keyboard_handle_input(keyboard_t *kbd,
 
 const char *keyboard_mod_label(const keyboard_t *kbd) {
     if (!kbd) return "    ";
-    switch (kbd->sticky_ctrl) {
-        case MOD_OFF:    return "    ";
-        case MOD_ARMED:  return "CTL?";
-        case MOD_LOCKED: return "CTL!";
-    }
-    return "    ";
-}
-
-int keyboard_in_scroll_mode(const keyboard_t *kbd) {
-    return kbd && kbd->scroll_mode;
+    return (kbd->sticky_ctrl == MOD_ARMED) ? "CTL " : "    ";
 }
 
 int keyboard_apply_modifiers(keyboard_t *kbd, char *buf, int len) {
     if (!kbd || !buf || len <= 0) return len;
-    switch (kbd->sticky_ctrl) {
-        case MOD_OFF:
-            return len;
-        case MOD_ARMED: {
-            char c = to_ctrl(buf[0]);
-            if (c) buf[0] = c;
-            kbd->sticky_ctrl = MOD_OFF;
-            return len;
-        }
-        case MOD_LOCKED:
-            for (int i = 0; i < len; i++) {
-                char c = to_ctrl(buf[i]);
-                if (c) buf[i] = c;
-            }
-            return len;
+    if (kbd->sticky_ctrl == MOD_ARMED) {
+        char c = to_ctrl(buf[0]);
+        if (c) buf[0] = c;
+        kbd->sticky_ctrl = MOD_OFF;
     }
     return len;
 }

@@ -5,33 +5,26 @@
  * Physical-button input layer for 3dssh M3.
  *
  * Maps 3DS hardware (D-pad, A/B/X/Y, L/R, START, SELECT, Circle Pad) to
- * SSH-bound byte sequences. Includes a sticky Ctrl modifier state machine
- * driven by the SELECT key:
+ * SSH-bound byte sequences. Sticky Ctrl modifier driven by SELECT:
  *
- *   OFF ──[SELECT]──> ARMED ──[SELECT]──> LOCKED ──[SELECT]──> OFF
- *           ↑                                  │
- *           └────[next non-modifier key]───────┘  (auto-clear after one use)
+ *   OFF ──[SELECT]──> ARMED ──[next produced char]──> OFF
  *
- * In ARMED, the next produced character (a-z, ,, ., etc.) is converted to
- * Ctrl-X form and the state drops back to OFF. In LOCKED, every produced
- * character is Ctrl-X until SELECT is pressed again. The L button provides
- * a hold-style alternative: L+key always sends Ctrl-key regardless of the
- * sticky state.
+ * Just two states. ARMED transforms the next character into Ctrl-X form
+ * (one-shot) and reverts to OFF. There is no "lock" mode (the user
+ * explicitly didn't want it).  L button is still a hold-style Ctrl
+ * alternative (L+key always sends Ctrl-key regardless of sticky state).
  *
- * Y toggles a "scroll mode" — while in scroll mode, the Circle Pad scrolls
- * the terminal scrollback buffer instead of being routed elsewhere. Press
- * Y again to leave.
+ * Circle Pad always scrolls the local terminal scrollback (no mode
+ * toggle needed). Any other key snaps the view back to live output.
  */
 
 typedef enum {
     MOD_OFF = 0,
     MOD_ARMED,
-    MOD_LOCKED,
 } mod_state_t;
 
 typedef struct keyboard_t {
     mod_state_t sticky_ctrl;
-    int         scroll_mode;    /* Y toggles */
     int         scroll_timer;   /* debounce: N frames between scroll steps */
 
     /* Output buffer for the byte sequence produced this frame. */
@@ -59,12 +52,8 @@ const char *keyboard_handle_input(keyboard_t *kbd,
                                   u32 keys_down, u32 keys_held,
                                   int circle_dy);
 
-/* For the status panel: returns an immutable display string for the current
- * sticky Ctrl state ("CTL", "[CTL]", "(ctl)" or empty). */
+/* For the status panel: short label of current sticky-Ctrl state. */
 const char *keyboard_mod_label(const keyboard_t *kbd);
-
-/* True if scroll mode is active (renderer can show indicator). */
-int keyboard_in_scroll_mode(const keyboard_t *kbd);
 
 /* Apply the current sticky Ctrl state to a buffer in place.
  *
