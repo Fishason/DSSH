@@ -76,6 +76,16 @@ renderer_t *renderer_init(C3D_RenderTarget *top, C3D_RenderTarget *bot) {
 
 void renderer_free(renderer_t *r) { free(r); }
 
+/* Cursor style: invert fg/bg of the cell at term->cur_x/cur_y.  This is
+ * the xterm/iTerm/alacritty default — fully opaque, never leaves
+ * a "ghost" trail when cursor moves (since the next frame rebuilds
+ * the entire screen from cell state, the inversion only happens at
+ * the new cursor position).  Far more reliable than alpha-blended
+ * overlay blocks at 60 fps with double-buffering. */
+static inline int cell_is_cursor(const terminal_t *t, int x, int y) {
+    return t->cursor_visible && x == t->cur_x && y == t->cur_y;
+}
+
 void renderer_draw_terminal(renderer_t *r, terminal_t *term) {
     if (!r || !term) return;
 
@@ -83,26 +93,35 @@ void renderer_draw_terminal(renderer_t *r, terminal_t *term) {
     int rows = (term->rows < r->top_rows) ? term->rows : r->top_rows;
     float cw = FONT_CELL_W, ch = FONT_CELL_H;
 
-    /* pass 1: backgrounds + cursor */
+    /* pass 1: backgrounds (with cursor cell painted using fg color) */
     for (int y = 0; y < rows; y++) {
         for (int x = 0; x < cols; x++) {
             term_cell_t c = terminal_get_cell(term, x, y);
             float fx = x * cw, fy = y * ch;
-            if (c.bg != 0x1e1e2eff)
-                C2D_DrawRectSolid(fx, fy, 0.1f, cw, ch, rgba_to_c2d(c.bg));
-            if (x == term->cur_x && y == term->cur_y && term->cursor_visible)
-                C2D_DrawRectSolid(fx, fy, 0.2f, cw, ch,
-                                  C2D_Color32(0xcd, 0xd6, 0xf4, 0x99));
+            uint32_t bg_rgba;
+            int draw_bg;
+            if (cell_is_cursor(term, x, y)) {
+                /* Inverted cursor: cell bg becomes fg color. */
+                bg_rgba = c.fg;
+                draw_bg = 1;
+            } else {
+                bg_rgba = c.bg;
+                draw_bg = (c.bg != 0x1e1e2eff);
+            }
+            if (draw_bg)
+                C2D_DrawRectSolid(fx, fy, 0.1f, cw, ch, rgba_to_c2d(bg_rgba));
         }
     }
 
-    /* pass 2: glyphs */
+    /* pass 2: glyphs (cursor cell glyph drawn in bg color) */
     for (int y = 0; y < rows; y++) {
         for (int x = 0; x < cols; x++) {
             term_cell_t c = terminal_get_cell(term, x, y);
             if (c.flags & CELL_FLAG_WIDE_CONT) continue;
             if (c.codepoint <= 0x20) continue;
-            u32 fg = rgba_to_c2d(c.fg);
+            u32 fg = cell_is_cursor(term, x, y)
+                   ? rgba_to_c2d(c.bg)   /* invert: glyph uses cell's bg */
+                   : rgba_to_c2d(c.fg);
             if (c.flags & CELL_FLAG_WIDE) {
                 int gi = font_wide_glyph_index(c.codepoint);
                 if (gi >= 0)

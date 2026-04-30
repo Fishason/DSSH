@@ -31,12 +31,13 @@ CELL_H = 10                  # was 12; new layout is 66 cols × 24 rows
 CELL_W2 = CELL_W * 2  # wide-cell width 12px
 THRESHOLD = 80
 
-# Zpix is a pixel font designed at exactly 12px tall.  Rendering it at
-# anything below 12pt loses pixel-art fidelity (strokes blur/merge).  So
-# we keep loading it at its native 12pt and let the centering code in
-# render_rows clip the (mostly empty) top/bottom rows when squeezing
-# into a CELL_H=10 cell.
-WIDE_FONT_NATIVE = 12
+# Wide font size used to render CJK glyphs.  Was 12 (Zpix native), but
+# rendering at 12 then clipping to CELL_H=10 left CJK ink extending all
+# the way to row 0 and row 9, while ASCII (Terminus 10pt) only used rows
+# 1-7 — visually CJK looked taller / "sunk lower" than ASCII on the same
+# line.  Loading Zpix at 10pt makes its ink height match Terminus's, so
+# baselines align cleanly.  Slight loss of pixel-art crispness for CJK.
+WIDE_FONT_NATIVE = 10
 
 
 # ── narrow glyph map ─────────────────────────────────────────
