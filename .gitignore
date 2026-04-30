@@ -18,6 +18,13 @@ romfs/
 # Downloaded fonts (re-fetch via tools/fetch_fonts.sh)
 data/fonts/
 
+# Downloaded pinyin dict sources (re-fetch via tools/fetch_pinyin_dict.sh)
+data/pinyin_dict_src/
+
+# Host-side test build dir
+build/test_ime
+test_ime
+
 # Test screenshots & SD card snapshots
 3dssh/
 *.HEIC
