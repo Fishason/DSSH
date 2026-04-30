@@ -177,7 +177,8 @@ static void draw_status(renderer_t *r, const ssh_config_t *cfg,
 
     renderer_draw_text(r, 1, 13, "TIPS", COLOR_ACCENT);
     renderer_draw_text(r, 1, 14, "  Ctrl-C: SELECT then X+'c'", COLOR_FG);
-    renderer_draw_text(r, 1, 15, "  tmux history: prefix [ (Ctrl-B then [)", COLOR_FG);
+    renderer_draw_text(r, 1, 15, "  L+Y emergency exit tmux copy mode (sends q)", COLOR_FG);
+    renderer_draw_text(r, 1, 16, "  tmux history: prefix [ (Ctrl-B then [)", COLOR_FG);
 
     /* Diagnostic readout — proves what bytes hit the wire when the user
      * presses a key.  Press B and look for "7f" in 'sent'.  Watch how

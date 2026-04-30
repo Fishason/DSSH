@@ -72,6 +72,13 @@ const char *keyboard_handle_input(keyboard_t *kbd,
         return NULL;
     }
 
+    /* Emergency: L + Y sends 'q' to exit tmux copy mode.  If the user
+     * accidentally entered copy mode via stick drift, this gets them
+     * back to normal input quickly without having to use swkbd. */
+    if ((keys_down & KEY_Y) && (keys_held & KEY_L)) {
+        return emit_byte(kbd, 'q');
+    }
+
     /* Circle Pad scrolls.  Two paths:
      *
      *   (a) Server has enabled xterm mouse tracking (tmux's `set -g mouse on`
@@ -79,20 +86,30 @@ const char *keyboard_handle_input(keyboard_t *kbd,
      *       copy-mode kicks in transparently — same UX as PC terminals.
      *
      *   (b) No mouse tracking: scroll our local 500-row scrollback buffer.
-     *       Convenience for non-tmux output (e.g. `cat largefile`).
      *
-     * Throttled to ~12 ticks/sec so a sustained stick push doesn't flood.
+     * Two layers of debounce:
+     *   - Deadband 80 (was 50): 3DS Circle Pads frequently drift to a static
+     *     offset of 50-70.  Above 80 reliably signals an intentional push.
+     *   - Startup delay of 6 frames before the first wheel event: a brief
+     *     accidental bump (under ~100ms) won't fire any event.  This
+     *     prevents stick taps from accidentally putting tmux into copy
+     *     mode (where it eats Backspace and looks like "B doesn't delete").
      *
-     * IMPORTANT: we used to early-return NULL whenever the stick was past
-     * its deadband.  3DS Circle Pads commonly drift slightly so dy can
-     * sit at 60+ when "neutral", which silently swallowed every B/A/D-pad
-     * press while the stick was off-center.  Now we only return early if
-     * we actually emit a wheel event (path a); otherwise we fall through
-     * so other key handlers below still run. */
-    int scroll_active = (circle_dy > 50 || circle_dy < -50);
+     * After the startup delay, throttle to ~12 ticks/sec for sustained
+     * scrolls.
+     *
+     * Falls through (not return NULL) so other key handlers below still
+     * run — earlier the scroll branch was eating B/A/D-pad whenever the
+     * stick was past deadband. */
+    int scroll_active = (circle_dy > 80 || circle_dy < -80);
     if (scroll_active) {
-        if (++kbd->scroll_timer >= 5) {
-            kbd->scroll_timer = 0;
+        kbd->scroll_timer++;
+        /* Need a sustained push of >= 6 frames before the first event,
+         * then one event every 5 frames after.  This filters out
+         * accidental bumps from putting tmux into copy mode. */
+        int armed = (kbd->scroll_timer == 6) ||
+                    (kbd->scroll_timer > 6 && (kbd->scroll_timer - 6) % 5 == 0);
+        if (armed) {
             if (term && term->mouse_proto && term->mouse_sgr) {
                 /* Wheel: button 64 = up, 65 = down at fake col/row 1,1. */
                 return emit(kbd, circle_dy > 0
