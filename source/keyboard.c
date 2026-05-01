@@ -113,9 +113,17 @@ const char *keyboard_handle_input(keyboard_t *kbd,
         return NULL;
     }
 
-    /* Circle Pad scroll — same as M3 polish:
+    /* Circle Pad scroll — same throttling as M3 polish:
      *   deadband 80, sustained-push 6 frames before first event,
-     *   then one event per 5 frames.  See M3 commit history for rationale. */
+     *   then one event per 5 frames.
+     *
+     * Pane targeting in tmux mouse mode: tmux routes wheel events to
+     * whichever pane contains the (col,row) we send.  Default (1,1)
+     * lands in the left/top pane.  Holding L (Shift modifier) shifts
+     * the target to (60,12), which lands in the right pane of a
+     * vertical split or the bottom pane of a horizontal split — the
+     * 3DS has no real cursor so this hold-style toggle is the
+     * simplest way to give both panes access without a UI mode. */
     int scroll_active = (circle_dy > 80 || circle_dy < -80);
     if (scroll_active) {
         kbd->scroll_timer++;
@@ -123,9 +131,15 @@ const char *keyboard_handle_input(keyboard_t *kbd,
                     (kbd->scroll_timer > 6 && (kbd->scroll_timer - 6) % 5 == 0);
         if (armed) {
             if (term && term->mouse_proto && term->mouse_sgr) {
-                return emit_seq(kbd, circle_dy > 0
-                                ? "\x1b[<64;1;1M"
-                                : "\x1b[<65;1;1M");
+                const char *seq;
+                if (kbd->shift_held) {
+                    seq = (circle_dy > 0) ? "\x1b[<64;60;12M"
+                                           : "\x1b[<65;60;12M";
+                } else {
+                    seq = (circle_dy > 0) ? "\x1b[<64;1;1M"
+                                           : "\x1b[<65;1;1M";
+                }
+                return emit_seq(kbd, seq);
             }
             if (term) terminal_scroll_view(term, circle_dy > 0 ? 1 : -1);
         }
@@ -178,17 +192,19 @@ const char *keyboard_handle_input(keyboard_t *kbd,
         }
     }
 
-    /* A → Enter, except in IME mode where it commits the current
-     * selection (analogous to pressing Enter in fcitx/sogou). */
+    /* A in IME mode is the "oops, I meant English" escape hatch:
+     * dumps the pinyin buffer to SSH as raw ASCII letters and clears
+     * the buffer.  This way you don't have to backspace + toggle
+     * mode + retype if you accidentally typed in CN.
+     *
+     * Space remains the "commit candidate" key (handled by softkb).
+     * A in EN mode (or with empty buffer) sends the literal Enter. */
     if (keys_down & KEY_A) {
         if (kbd->ime && ime_active(kbd->ime)) {
-            const char *committed = ime_select_current(kbd->ime);
-            if (committed) {
-                mark_event(kbd, "ENT");
-                /* Forward the dict pointer directly — it stays valid
-                 * for the dict's lifetime so we don't need to copy. */
-                return committed;
-            }
+            const char *result = emit_seq(kbd, ime_buffer(kbd->ime));
+            ime_clear(kbd->ime);
+            mark_event(kbd, "ENT");
+            return result;
         }
         mark_event(kbd, "ENT");
         if (term && term->sb_offset) terminal_scroll_view(term, -term->sb_offset);
@@ -266,6 +282,15 @@ const char *keyboard_status_label(const keyboard_t *k) {
 
 const char *keyboard_emit_for(keyboard_t *k, char base) {
     if (!k || base == 0) return NULL;
+
+    /* Special-case Shift + . → 。 (Chinese full-width period, U+3002).
+     * US Shift+. = '>' which we don't bind anyway (the soft keyboard
+     * has '>' on the symbols page).  Mode-agnostic so it also works
+     * when typing English with the period — Chinese sentence-end is
+     * a frequent enough need. */
+    if (k->shift_held && base == '.') {
+        return emit_seq(k, "\xe3\x80\x82");
+    }
 
     /* Apply Shift to letters (only). */
     char c = base;

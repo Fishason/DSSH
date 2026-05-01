@@ -35,6 +35,10 @@ test_ime
 *.heic
 *.MOV
 *.mov
+IMG_*.jpg
+IMG_*.JPG
+IMG_*.png
+IMG_*.PNG
 
 # Full-resolution demo video — uploaded as a Release asset, not in git
 docs/media/demo.mp4

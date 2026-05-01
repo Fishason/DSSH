@@ -149,9 +149,11 @@ static const softkey_t keys_symbols[] = {
     KX(  1,1,'!',"!"), KX( 33,1,'@',"@"), KX( 65,1,'#',"#"), KX( 97,1,'$',"$"),
     KX(129,1,'%',"%"), KX(161,1,'^',"^"), KX(193,1,'&',"&"), KX(225,1,'*',"*"),
     KX(257,1,'(',"("), KX(289,1,')',")"),
-    /* row 2: more symbols (with bigger stagger) */
-    K(0,2,'-',"-"), K(1,2,'+',"+"), K(2,2,'=',"="), K(3,2,'[',"["), K(4,2,']',"]"),
-    K(5,2,';',";"), K(6,2,':',":"), K(7,2,'\'',"'"), K(8,2,'/',"/"),
+    /* row 2: 10 punctuation, no stagger to keep alignment with rows 0/1
+     * and to fit '?' (was missing from M4 layout, added in M7 polish 2). */
+    KX(  1,2,'-',"-"), KX( 33,2,'+',"+"), KX( 65,2,'=',"="), KX( 97,2,'[',"["),
+    KX(129,2,']',"]"), KX(161,2,';',";"), KX(193,2,':',":"), KX(225,2,'\'',"'"),
+    KX(257,2,'/',"/"), KX(289,2,'?',"?"),
     /* row 3: [abc] | ` < > | space (4 cols) | \ ~ */
     KP(0,3,2,"abc"),
     K(2,3,'`',"`"),
@@ -730,19 +732,20 @@ static void draw_debug_screen(softkb_t *kb, renderer_t *r,
                               COL_STATUS_DIM);
     }
 
-    /* Physical-key bindings legend.  These mirror keyboard.c's M4 table
-     * verbatim; if those bindings change, this list must too. */
+    /* Physical-key bindings legend.  Mirrors keyboard.c — keep in sync.
+     * Five 14-px lines fit cleanly between the recv hex (ends ~y=86)
+     * and the mascot toggle button (y=170). */
     int kb_y = 100;
     renderer_draw_text_px(8, kb_y +  0,
-        "L      = Shift  Y = Ctrl   X = Alt",  COL_KEY_LABEL);
+        "L=Shift   Y=Ctrl   X=Alt", COL_KEY_LABEL);
     renderer_draw_text_px(8, kb_y + 14,
-        "A      = Enter  B = Backsp",          COL_KEY_LABEL);
+        "A=Enter (IME:emit pinyin as English)", COL_KEY_LABEL);
     renderer_draw_text_px(8, kb_y + 28,
-        "SELECT = Esc    R = mode toggle",     COL_KEY_LABEL);
+        "B=Backsp  SELECT=Esc  R=mode toggle", COL_KEY_LABEL);
     renderer_draw_text_px(8, kb_y + 42,
-        "D-pad  = arrows  Circle = scroll",    COL_KEY_LABEL);
+        "D-pad=arrows/IME  Space=commit cand", COL_KEY_LABEL);
     renderer_draw_text_px(8, kb_y + 56,
-        "START  = quit",                       COL_KEY_LABEL);
+        "Circle=scroll  L+Circle=right pane", COL_KEY_LABEL);
 
     /* Mascot toggle button — drawn as a regular key for visual
      * consistency with the keyboard layout. */

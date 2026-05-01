@@ -158,19 +158,32 @@ sdmc:/3ds/3dssh/
 
 | 键 | 功能 | 备注 |
 |---|---|---|
-| **A** | Enter / 提交 IME 高亮候选 | IME 激活时优先提交 |
+| **A** | Enter（EN）/ **拼音 buffer 当英文直出**（IME） | CN 模式下不小心打了英文？按 A 直接把 buffer 作为 ASCII 发出去并清空，不用切换模式重打 |
 | **B** | Backspace / 消拼音 buffer | hold-style 自动重复（最快 60/秒） |
 | **X** | Alt 修饰 | hold-style，按住时下次按键加 Alt |
 | **Y** | Ctrl 修饰 | hold-style，按住 Y + 点 c → Ctrl-C |
-| **L** | Shift 修饰 | hold-style，按住 L + 点 a → A |
+| **L** | Shift 修饰 / **+ Circle Pad → 切右窗格** | 见下面 [tmux 窗格滚动](#tmux-分屏滚动) |
 | **R** | 切换中/英输入模式 | 右上 ENG/CHN 显示当前模式 |
 | **SELECT** | Esc | 单点立即发 |
 | **START** | 退出程序 | |
+| **Space**（软键盘）| 普通空格（EN）/ **提交当前高亮候选**（IME） | 跟 sogou/fcitx 一致 |
+| **Shift + .** | **。**（中文句号 U+3002） | 不论 EN/CN 模式都生效 |
 | **D-pad ↑↓** | 方向键 / IME 翻页 | IME buffer 非空时翻候选页 |
 | **D-pad ←→** | 方向键 / IME 选词 | IME buffer 非空时移动候选游标 |
-| **Circle Pad ↑↓** | 滚动 scrollback / mouse-wheel | tmux/less 翻页 |
+| **Circle Pad ↑↓** | 滚动 scrollback / tmux mouse-wheel | 默认目标左/上窗格，**L 按住 → 右/下窗格** |
 
 > 长按 D-pad 或 B 键：250ms 启动重复，0.5s 后 12/秒，1.5s 后冲到 60/秒。
+
+### tmux 分屏滚动
+
+3DS 没有真正的鼠标光标，tmux 的 mouse-wheel 事件按 (col, row) 路由到对应
+窗格。DSSH 默认发 `(1,1)` 命中**左/上窗格**；按住 **L** 时改发 `(60,12)`
+命中**右/下窗格**。所以 vertical-split tmux 里：
+
+| 操作 | 效果 |
+|---|---|
+| Circle Pad ↑↓ | 滚动**左**窗格 |
+| L 按住 + Circle Pad ↑↓ | 滚动**右**窗格 |
 
 ### 软键盘
 
@@ -246,6 +259,14 @@ buffer:  niha[oz]    ← 绿色 niha + 红色 oz
 
 CN 模式下按住 **Y + c** 仍然发 `Ctrl-C`，按住 **L + a** 仍然发 `A`。修饰
 键优先于 IME 路由，跑 vim/tmux/claude-code 不受影响。
+
+### 误打英文逃生：A 键直出
+
+CN 模式 + 拼音 buffer 非空时，按 **A** 把 buffer 当英文 ASCII 发到 SSH
+并清空。例如不小心在 CN 模式打了 `cd /etc`：候选条会显示一堆奇怪中文，
+此时按 **A** 一次，SSH 直接收到 `cd /etc`，不用退格再切模式重打。
+
+> 区别：**Space** 提交高亮候选（中文上屏），**A** 直接把字母原样发出去。
 
 ---
 

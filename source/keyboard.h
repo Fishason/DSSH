@@ -54,8 +54,11 @@ typedef struct keyboard_t {
     const char *last_event_label;   /* "ENT", "BSP", "ESC", "R→C", "R→E", NULL */
     int         last_event_frame;
 
-    /* Output byte buffer for one frame's worth of emission. */
-    char out_buf[16];
+    /* Output byte buffer for one frame's worth of emission.  Sized
+     * to fit the longest single response: the A-key "emit IME buffer
+     * as English" path can dump up to IME_BUFFER_MAX (31) ASCII
+     * letters in one go. */
+    char out_buf[64];
     int  out_len;
 
     /* M7: pinyin IME pointer (may be NULL).  When set and active, the
