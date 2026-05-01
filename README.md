@@ -28,7 +28,8 @@
 </p>
 
 <p align="center">
-  <img src="docs/media/poster.jpg" alt="实机截图：上屏 ANSI 终端，下屏软键盘 + 螃蟹" width="640">
+  <img src="docs/media/poster.jpg" alt="实机：在 Claude Code 中用拼音 IME 输入中文" width="720"><br>
+  <sub>实机 New 2DS XL · 上屏 Claude Code 输入「你好啊！请问您是谁，你可以做什么」 · 下屏字母页 + CHN 模式 + Shift</sub>
 </p>
 
 ---
