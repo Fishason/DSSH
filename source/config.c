@@ -19,7 +19,7 @@ static void set_str(char *dst, const char *src) {
 int config_load(ssh_config_t *cfg, const char *path) {
     /* defaults — placeholder values; user must override via SD config or
      * the binary will fail to authenticate. */
-    set_str(cfg->host,       "52.76.104.33");
+    set_str(cfg->host,       "your-server.example.com");
     cfg->port = 22;
     set_str(cfg->user,       "ubuntu");
     set_str(cfg->key_path,   "sdmc:/3ds/3dssh/id_rsa");

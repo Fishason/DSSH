@@ -6,7 +6,7 @@
  * Falls back to compiled-in defaults if the file is missing or unparseable.
  *
  * Format (simple key=value, # for comments):
- *   host = 52.76.104.33
+ *   host = your-server.example.com
  *   port = 22
  *   user = ubuntu
  *   key_path = sdmc:/3ds/3dssh/id_rsa

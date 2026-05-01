@@ -1,8 +1,8 @@
-# 3dssh — SSH connection config
+# DSSH — SSH connection config
 # Copy this to sd:/3ds/3dssh/config.ini and edit values for your server.
 
 # SSH server hostname or IP
-host = 52.76.104.33
+host = your-server.example.com
 
 # SSH port (default 22)
 port = 22
@@ -17,7 +17,5 @@ user = ubuntu
 key_path = sdmc:/3ds/3dssh/id_rsa
 
 # Passphrase for the key, or leave empty for an unencrypted key.
-# (Recommended: unencrypted, since the SD card is the only place the key lives
-# and there's no good way to type a passphrase reliably yet — soft keyboard
-# arrives in M4.)
+# (Recommended: unencrypted, since the SD card is the only place the key lives.)
 passphrase =
