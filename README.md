@@ -16,6 +16,21 @@
   <img alt="build" src="https://img.shields.io/badge/build-devkitARM-orange">
 </p>
 
+<p align="center">
+  <img src="docs/media/preview.gif" alt="DSSH 实机演示" width="540"><br>
+  <sub>实机 New 2DS XL · 上屏 ANSI 终端 · 下屏软键盘 + 时钟 + 螃蟹</sub>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Fishason/DSSH/releases/download/v0.1.0/demo.mp4">
+    完整 1m42s 实机演示（10 MB MP4）
+  </a>
+</p>
+
+<p align="center">
+  <img src="docs/media/poster.jpg" alt="实机截图：上屏 ANSI 终端，下屏软键盘 + 螃蟹" width="640">
+</p>
+
 ---
 
 ## 功能

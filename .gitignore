@@ -29,10 +29,15 @@ data/pinyin_dict_src/
 build/test_ime
 test_ime
 
-# Test screenshots & SD card snapshots
+# Test screenshots & SD card snapshots (Mac extracted ._* metadata + key)
 3dssh/
 *.HEIC
 *.heic
+*.MOV
+*.mov
+
+# Full-resolution demo video — uploaded as a Release asset, not in git
+docs/media/demo.mp4
 
 # libssh2 build outputs (M1)
 data/libssh2/
