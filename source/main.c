@@ -245,23 +245,17 @@ idle_loop:
         char rbuf[READ_BUFSZ];
         (void)status_buf; (void)status_color;  /* not currently rendered */
 
-        /* Two stall detectors run in parallel, OR'd into the alert flag.
+        /* Interactive-stall detection (5 s): after the user sends bytes
+         * (g_last_tx_at), if no response (echo, output, keepalive ack)
+         * comes back within 5 s, the network is broken in the way the
+         * user actually notices.  The alert clears the instant any
+         * byte arrives.
          *
-         *  (a) Interactive-stall (5 s):  after a send, if we don't see
-         *      ANY response (echo, server output, keepalive ack) within
-         *      5 s, the network is broken in the user-noticeable way.
-         *      Triggered by `g_last_tx_at > last_rx_at` (sent more
-         *      recently than last received) plus the 5 s deadline.
-         *
-         *  (b) Idle-stall (25 s):  even when not typing, the keepalive
-         *      should produce traffic every 10 s.  Going 25 s with no
-         *      bytes at all means the link is dead.  Catches the case
-         *      where the user is reading a long paste and never types.
-         *
-         * Either condition flips the mascot into ALERT.  As soon as
-         * a single byte arrives, last_rx_at updates and both clear. */
+         * No idle-stall rule.  When the user isn't typing they aren't
+         * waiting for anything, so a silently broken link during an
+         * idle period is not worth flagging — it would just produce
+         * false positives when the keepalive ack happens to drop. */
         const int STALL_TX_NORX_S = 5;
-        const int STALL_IDLE_S    = 25;
         time_t last_rx_at = time(NULL);
         g_last_tx_at      = last_rx_at;
         int    stall_alert = 0;
@@ -292,15 +286,14 @@ idle_loop:
                 }
             }
 
-            /* Stall detection: see two-rule comment above. */
+            /* Interactive-stall: only flag when the user has typed
+             * something more recently than the last reply, and that
+             * typed-but-unacked window has been open longer than
+             * STALL_TX_NORX_S.  Idle periods can never trigger this. */
             time_t now_t = time(NULL);
-            int want_alert = ssh && ssh_is_connected(ssh) && (
-                /* Interactive-stall: typed but nothing came back. */
-                (g_last_tx_at > last_rx_at &&
-                 (now_t - g_last_tx_at) > STALL_TX_NORX_S) ||
-                /* Idle-stall: keepalive silence too long. */
-                ((now_t - last_rx_at) > STALL_IDLE_S)
-            );
+            int want_alert = ssh && ssh_is_connected(ssh) &&
+                             g_last_tx_at > last_rx_at &&
+                             (now_t - g_last_tx_at) > STALL_TX_NORX_S;
             if (want_alert != stall_alert) {
                 stall_alert = want_alert;
                 mascot_set_alert(mc, stall_alert);
