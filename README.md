@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Fishason/DSSH/releases/download/v0.1.0/demo.mp4">
+  <a href="https://github.com/Fishason/DSSH/releases/latest/download/demo.mp4">
     完整 1m42s 实机演示（10 MB MP4）
   </a>
 </p>
