@@ -237,6 +237,16 @@ idle_loop:
         char rbuf[READ_BUFSZ];
         (void)status_buf; (void)status_color;  /* not currently rendered */
 
+        /* Stall detection: track when we last received any SSH bytes
+         * (real data or a keepalive ack).  If nothing comes for
+         * STALL_THRESHOLD seconds, the connection is silently broken
+         * and we flip the mascot into ALERT mode.  Threshold of 25 s
+         * tolerates one missed 10-second keepalive round trip with
+         * margin. */
+        const int STALL_THRESHOLD = 25;
+        time_t last_rx_at = time(NULL);
+        int    stall_alert = 0;
+
         while (aptMainLoop()) {
             hidScanInput();
             u32 down = hidKeysDown();
@@ -248,17 +258,27 @@ idle_loop:
 
             /* ── SSH receive ── */
             if (ssh && ssh_is_connected(ssh)) {
+                ssh_keepalive_tick(ssh);
                 int n = ssh_read(ssh, rbuf, sizeof(rbuf));
                 if (n > 0) {
                     /* Capture for the debug page's recv-ring before the
                      * UTF-8 reassembler can chop the buffer up. */
                     softkb_record_recv(kb, rbuf, n);
                     feed_terminal(term, rbuf, n);
+                    last_rx_at = time(NULL);
                 } else if (n < 0) {
                     terminal_write(term, "\r\n\x1b[31m[disconnected]\x1b[0m\r\n");
                     ssh_disconnect(ssh);
                     ssh = NULL;
                 }
+            }
+
+            /* Stall detection: alert when last_rx_at is too old. */
+            int want_alert = (ssh && ssh_is_connected(ssh) &&
+                              (time(NULL) - last_rx_at) > STALL_THRESHOLD);
+            if (want_alert != stall_alert) {
+                stall_alert = want_alert;
+                mascot_set_alert(mc, stall_alert);
             }
 
             /* ── Physical keys (Esc / Enter / BS / D-pad / R / scroll) ── */

@@ -243,6 +243,12 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
 
     libssh2_session_set_blocking(session, 0);
 
+    /* Enable keepalive so we can tell idle-connection from broken-network.
+     * want_reply=1 makes the server SSH_MSG_GLOBAL_REQUEST/keepalive
+     * round-trip so any successful round produces ssh_read traffic
+     * — main.c's stall detector watches for that. */
+    libssh2_keepalive_config(session, 1, 10);
+
     ssh_client_t *ssh = calloc(1, sizeof(*ssh));
     if (!ssh) {
         copy_err(err_buf, err_sz, "out of memory");
@@ -305,4 +311,13 @@ int ssh_write(ssh_client_t *ssh, const char *buf, int len) {
 void ssh_set_pty_size(ssh_client_t *ssh, int cols, int rows) {
     if (!ssh || !ssh->connected || !ssh->channel) return;
     libssh2_channel_request_pty_size(ssh->channel, cols, rows);
+}
+
+void ssh_keepalive_tick(ssh_client_t *ssh) {
+    if (!ssh || !ssh->connected || !ssh->session) return;
+    /* libssh2 internally tracks the configured interval (10s) and
+     * only actually emits a packet when it's due — calling every
+     * frame is cheap and lets the library own the timing. */
+    int unused;
+    libssh2_keepalive_send(ssh->session, &unused);
 }

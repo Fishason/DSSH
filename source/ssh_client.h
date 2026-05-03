@@ -33,4 +33,11 @@ int  ssh_write(ssh_client_t *ssh, const char *buf, int len);
 
 void ssh_set_pty_size(ssh_client_t *ssh, int cols, int rows);
 
+/* Drive libssh2 keepalive — call once per main-loop iteration.  Internal
+ * timer means actual SSH_MSG_GLOBAL_REQUEST packets only transmit at
+ * the configured interval (10s by default; see ssh_client.c).  Each
+ * successful round-trip produces ssh_read traffic the caller can use
+ * to detect a stalled connection. */
+void ssh_keepalive_tick(ssh_client_t *ssh);
+
 #endif /* SSH_CLIENT_H */
