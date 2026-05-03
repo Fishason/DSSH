@@ -4,28 +4,24 @@
 #include <stdint.h>
 
 /*
- * Q-style salmon-pink crab — Anthropic Claude vibe at chibi scale.
+ * Front-facing chibi crab — banana-cat sway gait.
  *
- * Sprite: 18 px wide × 13 px tall, drawn one C2D_DrawRectSolid per
- * lit pixel (~70 rects/frame, trivial).
+ * Sprite: 18 px wide × 11 px tall.  Rounded oval body, two simple
+ * 2×2 black-square eyes, two small foot stubs at the bottom.
  *
- * Compared to the v0.3-polish-3 version this redesign drops the
- * 4-leg horizontal-glide gait for a 2-leg arcing biped walk:
+ * Walk: 8-frame pendulum sway around the anchored feet.  Body rocks
+ * left → return → right → return repeatedly; the upper rows shift
+ * more horizontally than the lower rows (row-by-row shear), and the
+ * foot row stays planted.  At each tilt peak the unweighted foot
+ * nudges up 1 px; the body itself rises 1 px on its way through the
+ * apex.  The result reads as a "duang duang" toddle, the same beat
+ * as the banana-cat reference GIF.
  *
- *   - Two big chunky feet (4-px wide, ~5 px apart) instead of 4 thin
- *     legs.  More cartoon, less centipede.
- *   - 4-frame walk cycle: rest → right foot arcs forward → rest →
- *     left foot arcs.  Lifted foot is drawn one row higher and
- *     slightly forward of the planted foot, the body bobs up 1 px
- *     during each lift — gives the silhouette the "duang duang"
- *     bouncy thump the user wants.
- *   - Q-style 3×3 white-sclera eyes with single black pupil, ~3 sec
- *     blink rhythm preserved from the previous version.
- *   - 3-tone salmon body shading (highlight top / main / shadow
- *     bottom) for a 2.5-D feel.
- *
- * State machine unchanged — see mascot.h.  ALERT freezes the walk
- * cycle, suppresses the blink, and overlays a red ✕ that sways.
+ * State machine unchanged from prior versions:
+ *   WALK    sway + horizontal traversal between [x_min, x_max].
+ *   IDLE    sway frozen at neutral; small idle bob.
+ *   FLEE    sway + faster horizontal speed away from a touch.
+ *   ALERT   sway frozen, red ✕ floats above the body.
  */
 
 typedef enum {
@@ -42,77 +38,54 @@ struct mascot_t {
     mascot_state_t state;
     mascot_state_t prev_state;
     int   state_frames;
-    int   anim_frame;     /* 0..3 walk cycle */
+    int   anim_frame;     /* 0..7 sway cycle index */
     int   anim_timer;
-    int   bob_phase;      /* 0..59, drives idle bob */
-    int   blink_phase;    /* 0..179, drives eye blinks */
-    int   alert_phase;    /* drives ✕ sway when alerting */
+    int   bob_phase;
+    int   alert_phase;
 };
 
 #define CRAB_W   18
-#define CRAB_H   13
+#define CRAB_H   11
 #define HIT_PAD  4
 
-/* 3-tone salmon body palette */
-#define COL_HL    0xf2bcabff
 #define COL_BODY  0xe89b89ff
-#define COL_SHD   0xc4756aff
-/* Eyes */
+#define COL_FOOT  0xd88271ff
 #define COL_EYE   0x000000ff
-#define COL_SCL   0xffffffff
-/* Alert */
 #define COL_X     0xe54040ff
 
-/* Body sprite (rows 0-9).  Char palette:
- *   H = highlight   @ = body main   S = shadow
- *   w = sclera      # = pupil       . = transparent
- * Eye rows 3-5 get overridden when blinking. */
-static const char *const crab_body_open[10] = {
-    "...HHHHHHHHHHHH...",   /* 0  highlight arc */
-    ".HHHH@@@@@@@@HHHH.",   /* 1  highlight transition */
-    "HHH@@@@@@@@@@@@HHH",   /* 2  transition row */
-    "@@@www@@@@@@www@@@",   /* 3  eye top (sclera) */
-    "@@@w#w@@@@@@w#w@@@",   /* 4  eye middle (pupil) */
-    "@@@www@@@@@@www@@@",   /* 5  eye bottom (sclera) */
-    "@@@@@@@@@@@@@@@@@@",   /* 6  widest body */
-    "SSS@@@@@@@@@@@@SSS",   /* 7  shadow transition */
-    "SSSSSSSSSSSSSSSSSS",   /* 8  shadow band */
-    "...SSSSSSSSSSSS...",   /* 9  bottom arc */
+/* Body rows 0-9.  Row 10 is the feet, animated separately.
+ * Char palette: '@' body, '#' eye, '.' transparent. */
+static const char *const crab_body[10] = {
+    "......@@@@@@......",   /* 0  top arc */
+    "....@@@@@@@@@@....",   /* 1  */
+    "..@@@@@@@@@@@@@@..",   /* 2  wide */
+    ".@@@@##@@@@##@@@@.",   /* 3  eyes top */
+    ".@@@@##@@@@##@@@@.",   /* 4  eyes bottom */
+    "@@@@@@@@@@@@@@@@@@",   /* 5  widest */
+    "@@@@@@@@@@@@@@@@@@",   /* 6  */
+    ".@@@@@@@@@@@@@@@@.",   /* 7  narrowing */
+    "..@@@@@@@@@@@@@@..",   /* 8  */
+    "...@@@@@@@@@@@@...",   /* 9  bottom curve */
 };
 
-/* Eye area when blinking — replaces rows 3-5 with a flat body row +
- * a single 2-px black pupil bar at row 4. */
-static const char *const crab_body_blink[3] = {
-    "@@@@@@@@@@@@@@@@@@",
-    "@@@@##@@@@@@##@@@@",
-    "@@@@@@@@@@@@@@@@@@",
-};
+/* Foot row — left foot at cols 3-5, right foot at cols 12-14. */
+static const char *const crab_feet =
+    "...FFF......FFF...";
 
-/* 4-frame leg cycle on rows 10-12.  Two thick legs:
- *
- *   left  trunk cols 3-4   foot 2-5 (4-wide)
- *   right trunk cols 13-14 foot 12-15 (4-wide)
- *
- * In the lift frames (1, 3) the airborne foot moves up to row 11
- * and the corresponding shin row 11 is empty — reads as "foot in
- * mid-arc above the ground". */
-static const char *const crab_legs[4][3] = {
-    /* frame 0: rest, both feet on the ground */
-    { "...@@........@@...",
-      "...@@........@@...",
-      "..@@@@......@@@@.." },
-    /* frame 1: right foot lifted and arcing */
-    { "...@@........@@...",
-      "...@@.......@@@@..",
-      "..@@@@............" },
-    /* frame 2: rest again — short pause between strides */
-    { "...@@........@@...",
-      "...@@........@@...",
-      "..@@@@......@@@@.." },
-    /* frame 3: left foot lifted and arcing */
-    { "...@@........@@...",
-      "..@@@@.......@@...",
-      "............@@@@.." },
+/* Sway tilt sequence — 8 frames going neutral → left peak → return
+ * → right peak → return.  Body bob is -1 px when |tilt| == 2. */
+static const int8_t sway_tilts[8] = { 0, -1, -2, -1, 0, +1, +2, +1 };
+
+/* Pre-computed row-shear tables: shear[tilt+2][row] = horizontal
+ * pixel offset for that body row.  Bottom row (9) is anchored at 0,
+ * top row (0) gets the full tilt amount.  Generated as
+ * round(tilt * (9-row) / 9.0). */
+static const int8_t shear_dx[5][10] = {
+    { -2,-2,-2,-1,-1,-1,-1, 0, 0, 0 },   /* tilt = -2 */
+    { -1,-1,-1,-1,-1, 0, 0, 0, 0, 0 },   /* tilt = -1 */
+    {  0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },   /* tilt =  0 */
+    {  1, 1, 1, 1, 1, 0, 0, 0, 0, 0 },   /* tilt = +1 */
+    {  2, 2, 2, 1, 1, 1, 1, 0, 0, 0 },   /* tilt = +2 */
 };
 
 /* 5×5 red ✕ for ALERT. */
@@ -186,19 +159,15 @@ static void clamp_and_bounce(mascot_t *m, int *hit_wall) {
 void mascot_update(mascot_t *m) {
     if (!m) return;
 
-    /* Walk cycle: advance every 8 frames in WALK/FLEE.  Slower than
-     * the v0.3 version (was 6) so the duang-duang rhythm reads as
-     * heavy thumping rather than a quick scuttle. */
+    /* Sway frame advances every 6 frames in WALK/FLEE → 8-frame cycle
+     * completes in ~0.8 s, the toddle pace from the banana-cat ref. */
     if (m->state == STATE_WALK || m->state == STATE_FLEE) {
-        if (++m->anim_timer >= 8) {
+        if (++m->anim_timer >= 6) {
             m->anim_timer = 0;
-            m->anim_frame = (m->anim_frame + 1) & 3;
+            m->anim_frame = (m->anim_frame + 1) & 7;
         }
     }
     m->bob_phase   = (m->bob_phase + 1) % 60;
-    if (m->state != STATE_ALERT) {
-        m->blink_phase = (m->blink_phase + 1) % 180;
-    }
     m->alert_phase = (m->alert_phase + 1) % 24;
 
     int hit_wall = 0;
@@ -226,64 +195,56 @@ void mascot_update(mascot_t *m) {
     }
 }
 
-static uint32_t color_for_char(char ch) {
-    switch (ch) {
-        case 'H': return COL_HL;
-        case '@': return COL_BODY;
-        case 'S': return COL_SHD;
-        case 'w': return COL_SCL;
-        case '#': return COL_EYE;
-        default:  return 0;
-    }
-}
-
 void mascot_draw(mascot_t *m) {
     if (!m) return;
     int xi = (int)m->fx;
     int yi = m->y_top;
 
-    /* Idle bob: small 1-px wiggle every ~8 frames. */
+    /* Idle small bob. */
     if (m->state == STATE_IDLE && ((m->bob_phase / 8) & 1)) yi -= 1;
 
-    /* Walk bob: body lifts 1 px on the leg-arc frames (1 and 3) so
-     * the silhouette pulses up-down-up-down — the "duang duang" beat. */
+    /* Sway state — only WALK/FLEE animate; IDLE/ALERT freeze at tilt 0. */
+    int tilt = 0;
     int body_dy = 0;
-    if ((m->state == STATE_WALK || m->state == STATE_FLEE) &&
-        (m->anim_frame & 1)) body_dy = -1;
+    int foot_l_dy = 0, foot_r_dy = 0;
+    if (m->state == STATE_WALK || m->state == STATE_FLEE) {
+        tilt = sway_tilts[m->anim_frame];
+        if (tilt == +2 || tilt == -2) body_dy = -1;
+        /* Tilt right (+2) → left foot unweighted (lifts 1 px).
+         * Tilt left (-2) → right foot unweighted. */
+        if (tilt == +2) foot_l_dy = -1;
+        if (tilt == -2) foot_r_dy = -1;
+    }
+    const int8_t *dx_row = shear_dx[tilt + 2];
 
-    int blinking = (m->state != STATE_ALERT) && (m->blink_phase < 6);
+    u32 body_c = rgba_to_c2d(COL_BODY);
+    u32 foot_c = rgba_to_c2d(COL_FOOT);
+    u32 eye_c  = rgba_to_c2d(COL_EYE);
 
-    /* Body rows 0-9 — bob with body_dy. */
+    /* Body rows 0-9 — apply per-row shear and shared body_dy. */
     for (int row = 0; row < 10; row++) {
-        const char *src = crab_body_open[row];
-        if (blinking && row >= 3 && row <= 5)
-            src = crab_body_blink[row - 3];
+        const char *src = crab_body[row];
+        int dx = dx_row[row];
         for (int col = 0; col < CRAB_W; col++) {
-            uint32_t c = color_for_char(src[col]);
-            if (c) {
-                C2D_DrawRectSolid((float)(xi + col),
-                                  (float)(yi + row + body_dy),
-                                  0.6f, 1, 1, rgba_to_c2d(c));
-            }
+            char ch = src[col];
+            u32 c = (ch == '@') ? body_c : (ch == '#') ? eye_c : 0;
+            if (!c) continue;
+            C2D_DrawRectSolid((float)(xi + col + dx),
+                              (float)(yi + row + body_dy),
+                              0.6f, 1, 1, c);
         }
     }
 
-    /* Legs rows 10-12 — anchored at full y_top regardless of body
-     * bob.  When the body bobs up 1 px there's a 1-row gap between
-     * body bottom and leg top that reads as the body "lifting off
-     * the ground".  Lifted foot in this frame is drawn at row 11
-     * (one row higher than rest), making the leg look mid-arc. */
-    int frame = (m->state == STATE_ALERT || m->state == STATE_IDLE)
-              ? 0 : m->anim_frame;
-    for (int row = 0; row < 3; row++) {
-        const char *src = crab_legs[frame][row];
-        for (int col = 0; col < CRAB_W; col++) {
-            if (src[col] == '@') {
-                C2D_DrawRectSolid((float)(xi + col),
-                                  (float)(yi + 10 + row),
-                                  0.6f, 1, 1, rgba_to_c2d(COL_BODY));
-            }
-        }
+    /* Foot row — anchored, with separate dy per foot. */
+    for (int col = 0; col < CRAB_W; col++) {
+        if (crab_feet[col] != 'F') continue;
+        int dy;
+        if (col >= 3 && col <= 5)         dy = foot_l_dy;
+        else if (col >= 12 && col <= 14)  dy = foot_r_dy;
+        else                               dy = 0;
+        C2D_DrawRectSolid((float)(xi + col),
+                          (float)(yi + 10 + dy),
+                          0.6f, 1, 1, foot_c);
     }
 
     /* Red ✕ overlay for ALERT. */

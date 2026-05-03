@@ -149,9 +149,9 @@ int main(int argc, char *argv[]) {
     keyboard_t *kbd  = keyboard_init();
     /* Mascot lives in the bottom row (y=214..239, 26 px tall).  Clock
      * occupies x=2..67 on the left; mascot scampers in x=72..302 on
-     * the right.  Crab is 13 px tall (10-row body + 3-row legs) so
-     * y_top = 214 + (26-13)/2 = 220 centers it in the row. */
-    mascot_t   *mc   = mascot_init(72, 302, 220);
+     * the right.  Crab is 11 px tall (10-row body + 1-row feet) so
+     * y_top = 214 + (26-11)/2 = 221 centers it in the row. */
+    mascot_t   *mc   = mascot_init(72, 302, 221);
     /* IME loads later (after the M7 banner pumps); softkb tolerates
      * a NULL ime by falling back to passthrough in CN mode. */
     ime_t      *ime  = NULL;
