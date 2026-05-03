@@ -302,15 +302,25 @@ int ime_selection_idx(const ime_t *ime) {
     return ime ? ime->selection_idx : 0;
 }
 
+/* Wrap-around within the current page so the cursor jumps from the
+ * leftmost slot to the rightmost (and vice versa) instead of getting
+ * stuck at the edge — matches how most IMEs (sogou/fcitx) handle this. */
 void ime_selection_left(ime_t *ime) {
     if (!ime) return;
-    if (ime->selection_idx > 0) ime->selection_idx--;
+    int n = ime_candidate_count(ime);
+    if (n <= 0) return;
+    ime->selection_idx = (ime->selection_idx == 0)
+                       ? n - 1
+                       : ime->selection_idx - 1;
 }
 
 void ime_selection_right(ime_t *ime) {
     if (!ime) return;
     int n = ime_candidate_count(ime);
-    if (ime->selection_idx < n - 1) ime->selection_idx++;
+    if (n <= 0) return;
+    ime->selection_idx = (ime->selection_idx >= n - 1)
+                       ? 0
+                       : ime->selection_idx + 1;
 }
 
 const char *ime_select(ime_t *ime, int idx) {
