@@ -1,12 +1,17 @@
 #pragma once
 
 /*
- * The Anthropic-red crab mascot that scampers along the bottom row of
- * the soft keyboard.  Has three states:
- *   WALK   slow horizontal traversal, bouncing off the configured x range
- *   IDLE   stops and bobs in place
- *   FLEE   triggered by a touch on the crab, runs fast away from where
- *          the touch landed for ~1 second, then returns to WALK
+ * Anthropic-style salmon-pink crab mascot that scampers along the
+ * bottom row of the soft keyboard.
+ *
+ * States (internal):
+ *   WALK    slow horizontal traversal, bouncing off the configured x range.
+ *   IDLE    stops and bobs in place.
+ *   FLEE    triggered by a touch on the crab; runs fast away for ~1 sec
+ *           then returns to WALK.
+ *   ALERT   set externally by main.c when the SSH connection has stalled.
+ *           Crab freezes and holds up a red ✕, waving it gently until
+ *           the alert is cleared.
  *
  * All coordinates are bottom-screen pixel space (320×240, top-left origin).
  */
@@ -26,3 +31,8 @@ void mascot_draw(mascot_t *m);
 /* Touch helpers. */
 int  mascot_hit_test(const mascot_t *m, int tx, int ty);
 void mascot_on_touched(mascot_t *m, int from_tx);
+
+/* Toggle the alert overlay (red ✕ above the body, waving).  Called by
+ * main.c when SSH stall detection fires; idempotent — repeated calls
+ * with the same value are no-ops. */
+void mascot_set_alert(mascot_t *m, int alert);
