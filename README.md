@@ -1,3 +1,7 @@
+<p align="center">
+  <b>English</b> · <a href="README.zh.md">中文</a>
+</p>
+
 <h1 align="center">DSSH</h1>
 
 <p align="center">
@@ -5,9 +9,11 @@
 </p>
 
 <p align="center">
-  <b>Nintendo 3DS 中文 SSH 客户端</b><br>
-  上屏 ANSI 终端 · 下屏自绘软键盘 + 拼音 IME · RSA 公钥认证<br>
-  从 3DS 直接连服务器跑 tmux + claude-code，离不开沙发也能 coding
+  <b>Nintendo 3DS SSH client with on-screen pinyin IME</b><br>
+  Top screen runs a citro2d ANSI terminal · bottom screen draws its own
+  soft keyboard · RSA public-key auth over libssh2 + mbedTLS<br>
+  Run <code>tmux</code> + <code>claude-code</code> from a 3DS — code from
+  the couch without ever opening the laptop.
 </p>
 
 <p align="center">
@@ -17,114 +23,124 @@
 </p>
 
 <p align="center">
-  <img src="docs/media/preview.gif" alt="DSSH 实机演示" width="540"><br>
-  <sub>实机 New 2DS XL · 上屏 ANSI 终端 · 下屏软键盘 + 时钟 + 螃蟹</sub>
+  <img src="docs/media/preview.gif" alt="DSSH live demo" width="540"><br>
+  <sub>Real New 2DS XL · top screen ANSI terminal · bottom screen soft
+  keyboard + clock + crab</sub>
 </p>
 
 <p align="center">
   <a href="https://github.com/Fishason/DSSH/releases/latest/download/demo.mp4">
-    完整 1m42s 实机演示（10 MB MP4）
+    Full 1m42s demo video (10 MB MP4)
   </a>
 </p>
 
 <p align="center">
-  <img src="docs/media/poster.jpg" alt="实机：在 Claude Code 中用拼音 IME 输入中文" width="720"><br>
-  <sub>实机 New 2DS XL · 上屏 Claude Code 输入「你好啊！请问您是谁，你可以做什么」 · 下屏字母页 + CHN 模式 + Shift</sub>
+  <img src="docs/media/poster.jpg" alt="Real device: typing Chinese into Claude Code via the pinyin IME" width="720"><br>
+  <sub>Real New 2DS XL · top: typing「你好啊！请问您是谁，你可以做什么」into
+  Claude Code · bottom: letter page + CHN mode + Shift held</sub>
 </p>
 
 ---
 
-## 功能
+## Features
 
-- **完整 ANSI/VT100 终端**：tmux 状态栏、claude-code spinner、box-drawing
-  边框、256-color、TrueColor、Braille — 都正常显示
-- **中文渲染**：内置 Zpix 12px 像素字体覆盖 21,000+ 个 CJK 统一汉字 +
-  Terminus 6×12 ASCII，中英混排 baseline 对齐
-- **自绘软键盘**：iOS 风格 3px 圆角键 + 平滑下沉动画，字母 / 符号双页
-- **拼音输入法**：rime-ice 顶部 30 万词典 + 缩写匹配（`nh` → 你好）+
-  前缀 fallback（`nihaoz` 自动回退到 `nihao`）+ 候选条游标导航
-- **RSA-4096 公钥认证**：libssh2 + mbedTLS，私钥放 SD 卡读
-- **物理键全映射**：D-pad 方向键、修饰键 hold-style（L=Shift / Y=Ctrl /
-  X=Alt）、Circle Pad scrollback / mouse-wheel
-- **Anthropic 红螃蟹吉祥物**：底行左右奔跑，点击会躲开 🦀
-- **隐藏 debug 页面**：双击右上 ENG/CHN 进，看 SSH 字节流 + 物理键说明 +
-  螃蟹开关
+- **Full ANSI / VT100 terminal** — tmux status bar, claude-code spinner,
+  box-drawing borders, 256-color, TrueColor, Braille; everything renders.
+- **Chinese rendering** — bundled Zpix 12px pixel font covers 21,000+ CJK
+  unified ideographs, Terminus 6×12 for ASCII; mixed CJK/ASCII baselines
+  align cleanly on the same line.
+- **Self-drawn soft keyboard** — iOS-style 3px rounded keys with smooth
+  press-down animation; letters / symbols pages.
+- **Pinyin input method** — top 300k entries from rime-ice, plus
+  abbreviation matching (`nh` → 你好), prefix fallback (`nihaoz`
+  auto-falls-back to `nihao`), and a candidate cursor.
+- **RSA-4096 public-key auth** — libssh2 + mbedTLS, private key read
+  from the SD card.
+- **Full physical-key mapping** — D-pad arrow keys, hold-style modifiers
+  (L = Shift, Y = Ctrl, X = Alt), Circle Pad scrollback / mouse-wheel.
+- **Anthropic-red crab mascot** — scampers along the bottom row, dodges
+  when you tap it 🦀.
+- **Hidden debug page** — double-tap the ENG/CHN badge to see the live
+  SSH byte stream, full key-binding cheat sheet, and a mascot toggle.
 
-## 目录
+## Table of contents
 
-- [安装](#安装)
-- [服务器侧准备](#服务器侧准备一次性)
-- [配置 config.ini](#配置-configini)
-- [按键说明](#按键说明)
-- [输入法用法](#输入法用法)
-- [Debug 页面](#debug-页面)
-- [从源码构建](#从源码构建)
-- [项目结构](#项目结构)
-- [致谢](#致谢)
+- [Install](#install)
+- [Server-side setup](#server-side-setup-one-time)
+- [Configure config.ini](#configure-configini)
+- [Key bindings](#key-bindings)
+- [Using the IME](#using-the-ime)
+- [Debug page](#debug-page)
+- [Build from source](#build-from-source)
+- [Project layout](#project-layout)
+- [Credits](#credits)
 - [License](#license)
 
 ---
 
-## 安装
+## Install
 
-DSSH 跑在 **破解过的 3DS / 2DS / New 3DS** 上。需要 Homebrew Launcher
-（HBL）或 FBI 一类的 CIA 安装器。
+DSSH runs on a **modded 3DS / 2DS / New 3DS**.  You need either the
+Homebrew Launcher (HBL) or a CIA installer like FBI.
 
-### 方案 A — `.cia` 安装（推荐）
+### Option A — `.cia` install (recommended)
 
-1. 下载本仓库 [Releases](../../releases) 里的 `DSSH.cia`（约 14 MB）
-2. 拷到 SD 卡，路径任意（比如 `/cias/DSSH.cia`）
-3. 启 FBI → SD → 选 `DSSH.cia` → `Install CIA`
-4. HOME 菜单里出现橙色 DSSH 图标
+1. Grab `DSSH.cia` (~14 MB) from the [latest release](../../releases/latest).
+2. Copy it anywhere on the SD card (e.g. `/cias/DSSH.cia`).
+3. Open FBI → SD → select `DSSH.cia` → `Install CIA`.
+4. The orange DSSH icon shows up on the HOME menu.
 
-### 方案 B — `.3dsx` 直跑
+### Option B — `.3dsx` direct launch
 
-1. Releases 里下 `dssh.3dsx`
-2. 拷到 SD 卡 `/3ds/dssh/dssh.3dsx`
-3. 启 HBL → 选 DSSH
+1. Grab `3dssh.3dsx` from the latest release.
+2. Copy to `/3ds/dssh/dssh.3dsx` on the SD card.
+3. Open HBL → pick DSSH.
 
-### 方案 C — `3dslink` WiFi 推送（开发用）
+### Option C — `3dslink` over Wi-Fi (developer flow)
 
 ```bash
-# 3DS 上 HBL 按 Y 进 "Waiting for 3dslink..."
+# On the 3DS: launch HBL, press Y → "Waiting for 3dslink..."
 3dslink -a <3DS-LAN-IP> 3dssh.3dsx
 ```
 
 ---
 
-## 服务器侧准备（一次性）
+## Server-side setup (one-time)
 
-3DS 上的 libssh2 用的是 mbedTLS 后端，**硬编码不支持 ed25519**。所以要
-专门给 3DS 生成一把 RSA-4096 公私钥对，原来 PC 上的 ed25519 不动：
+The 3DS libssh2 build uses mbedTLS as its crypto backend and
+**hardcodes-disables ed25519**.  So you generate a fresh RSA-4096
+keypair just for the 3DS — your existing ed25519 key on the PC keeps
+working untouched:
 
 ```bash
-# 1. 在你的 PC 上生成 3DS 专用 RSA 密钥
+# 1. Generate a 3DS-only RSA key on your PC
 ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa_3ds -C "3ds-ssh-client"
 
-# 2. 把公钥复制到服务器的 authorized_keys
+# 2. Copy the public half into the server's authorized_keys
 ssh-copy-id -i ~/.ssh/id_rsa_3ds.pub user@your-server.example.com
 
-# 3. 验证从 PC 用新 RSA 能连
+# 3. Verify the new RSA key works from your PC
 ssh -i ~/.ssh/id_rsa_3ds user@your-server.example.com 'echo OK'
 ```
 
-**安全建议**：编辑服务器的 `~/.ssh/authorized_keys`，给这把 RSA 那一行
-前面加 `from="<家里公网 IP>"`，这样即使 SD 卡丢了，钥匙也只能从你家网
-络登入。
+**Recommended hardening**: prepend the new line in the server's
+`~/.ssh/authorized_keys` with `from="<your-home-public-IP>"` so a lost
+SD card can only log in from your home network.
 
-把 **私钥** `~/.ssh/id_rsa_3ds` 通过读卡器复制到 SD 卡的
-`/3ds/3dssh/id_rsa`（注意：3DS 装 CIA 后 title-id 路径不同，但**配置 +
-密钥**始终读 `sdmc:/3ds/3dssh/`）。
+Copy the **private key** `~/.ssh/id_rsa_3ds` onto the SD card at
+`/3ds/3dssh/id_rsa` (the path is fixed even when DSSH is installed as a
+.cia — config + key always read from `sdmc:/3ds/3dssh/`).
 
-> ⚠️ SD 卡是明文。物理持有 SD 的人就能登服务器。务必加 `from="..."` IP
-> 限制或 `command="..."` 命令限制。
+> ⚠️ The SD card stores the key in plain text.  Anyone holding the SD
+> can log in to your server.  Add `from="..."` IP restriction or
+> `command="..."` lockdown in `authorized_keys`.
 
 ---
 
-## 配置 config.ini
+## Configure config.ini
 
-把仓库里的 `sd_template/3ds/3dssh/config.ini.example` 拷到 SD 卡的
-`/3ds/3dssh/config.ini`，按你的服务器改：
+Copy `sd_template/3ds/3dssh/config.ini.example` to the SD card at
+`/3ds/3dssh/config.ini` and edit the values:
 
 ```ini
 host       = your-server.example.com
@@ -134,15 +150,15 @@ key_path   = sdmc:/3ds/3dssh/id_rsa
 passphrase =
 ```
 
-| 字段 | 说明 |
-|------|------|
-| `host` | 服务器 IP 或域名 |
-| `port` | 端口（默认 22） |
-| `user` | 服务器登录用户名 |
-| `key_path` | 私钥路径，`sdmc:/...` 是 3DS 标准 SD 路径前缀 |
-| `passphrase` | 私钥口令；建议留空（SD 卡上输 passphrase 体验差） |
+| Field | Meaning |
+|---|---|
+| `host` | Server IP or hostname |
+| `port` | Port (default 22) |
+| `user` | SSH login user |
+| `key_path` | Private key path; `sdmc:/...` is the 3DS standard SD prefix |
+| `passphrase` | Optional key passphrase; leave empty (typing one on the soft keyboard is awkward) |
 
-最终 SD 卡布局：
+Final SD layout:
 
 ```
 sdmc:/3ds/3dssh/
@@ -152,70 +168,75 @@ sdmc:/3ds/3dssh/
 
 ---
 
-## 按键说明
+## Key bindings
 
-### 物理键
+### Physical buttons
 
-| 键 | 功能 | 备注 |
+| Button | Function | Notes |
 |---|---|---|
-| **A** | Enter（EN）/ **拼音 buffer 当英文直出**（IME） | CN 模式下不小心打了英文？按 A 直接把 buffer 作为 ASCII 发出去并清空，不用切换模式重打 |
-| **B** | Backspace / 消拼音 buffer | hold-style 自动重复（最快 60/秒） |
-| **X** | Alt 修饰 | hold-style，按住时下次按键加 Alt |
-| **Y** | Ctrl 修饰 | hold-style，按住 Y + 点 c → Ctrl-C |
-| **L** | Shift 修饰 / **+ Circle Pad → 切右窗格** | 见下面 [tmux 窗格滚动](#tmux-分屏滚动) |
-| **R** | 切换中/英输入模式 | 右上 ENG/CHN 显示当前模式 |
-| **SELECT** | Esc | 单点立即发 |
-| **START** | 退出程序 | |
-| **Space**（软键盘）| 普通空格（EN）/ **提交当前高亮候选**（IME） | 跟 sogou/fcitx 一致 |
-| **Shift + .** | **。**（中文句号 U+3002） | 不论 EN/CN 模式都生效 |
-| **D-pad ↑↓** | 方向键 / IME 翻页 | IME buffer 非空时翻候选页 |
-| **D-pad ←→** | 方向键 / IME 选词 | IME buffer 非空时移动候选游标 |
-| **Circle Pad ↑↓** | 滚动 scrollback / tmux mouse-wheel | 默认目标左/上窗格，**L 按住 → 右/下窗格** |
+| **A** | Enter (EN) / **emit pinyin buffer as English** (IME) | Accidentally typed English in CN mode? Press A and the buffer flies to SSH as raw ASCII — no need to backspace and switch modes. |
+| **B** | Backspace / consume one pinyin letter | Hold-style auto-repeat (peaks at 60 / sec) |
+| **X** | Alt modifier | Hold-style — held when the next key fires |
+| **Y** | Ctrl modifier | Hold-style — Y + tap `c` → Ctrl-C |
+| **L** | Shift modifier / **+ Circle Pad → right pane** | See [tmux split scrolling](#tmux-split-scrolling) below |
+| **R** | Toggle CN/EN input mode | Top-right ENG/CHN reflects the current mode |
+| **SELECT** | Esc | Tap fires immediately |
+| **START** | Quit DSSH | |
+| **Space** (soft keyboard) | Plain space (EN) / **commit highlighted candidate** (IME) | Matches sogou / fcitx convention |
+| **Shift + .** | **。** (full-width Chinese period, U+3002) | Works in both EN and CN modes |
+| **D-pad ↑↓** | Arrow keys / IME page nav | When the IME buffer is active, ↑↓ paginates candidates |
+| **D-pad ←→** | Arrow keys / IME selection cursor | When active, ←→ moves the candidate cursor within the page |
+| **Circle Pad ↑↓** | Scrollback / tmux mouse-wheel | Default targets the left/top pane; **hold L → right/bottom pane** |
 
-> 长按 D-pad 或 B 键：250ms 启动重复，0.5s 后 12/秒，1.5s 后冲到 60/秒。
+> Long-press D-pad or B: 250 ms initial delay, ramps up to 12 / sec at
+> 0.5 s, peaks at 60 / sec after 1.5 s.
 
-### tmux 分屏滚动
+### tmux split scrolling
 
-3DS 没有真正的鼠标光标，tmux 的 mouse-wheel 事件按 (col, row) 路由到对应
-窗格。DSSH 默认发 `(1,1)` 命中**左/上窗格**；按住 **L** 时改发 `(60,12)`
-命中**右/下窗格**。所以 vertical-split tmux 里：
+The 3DS has no real cursor, so tmux's mouse-wheel events get routed by
+the `(col, row)` we send.  DSSH defaults to `(1, 1)` → hits the
+left/top pane; holding **L** sends `(60, 12)` → hits the right/bottom
+pane.  In a vertical-split tmux:
 
-| 操作 | 效果 |
+| Action | Effect |
 |---|---|
-| Circle Pad ↑↓ | 滚动**左**窗格 |
-| L 按住 + Circle Pad ↑↓ | 滚动**右**窗格 |
+| Circle Pad ↑↓ | Scrolls the **left** pane |
+| L held + Circle Pad ↑↓ | Scrolls the **right** pane |
 
-### 软键盘
+### Soft keyboard
 
-下屏占满软键盘，两页：
+The bottom screen is the soft keyboard — two pages:
 
-- **字母页**（默认）：QWERTY 布局，含 `,` `.` 标点 + Tab + 大空格
-- **符号页**（左下 `123` 切换）：1234567890、!@#\$%^&\*() 整齐对齐两行 +
-  其他常用符号 + 反斜杠
+- **Letters page** (default): QWERTY layout with `,` `.` punctuation,
+  Tab, and a wide Space.
+- **Symbols page** (toggle via the bottom-left `123` key):
+  `1234567890`, `!@#$%^&*()` cleanly aligned on two rows, plus other
+  common punctuation including `?` and `\`.
 
-任何键支持 hold-style 修饰组合，例如：**按住 Y + 点 b** = `Ctrl-B`
-（tmux prefix）。
+Any key supports hold-style modifier combos.  Example:
+**hold Y + tap b** = `Ctrl-B` (the tmux prefix).
 
-### 状态条（顶部 30 px）
+### Status bar (top 30 px)
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│ [SFT]   候选条 / 拼音 buffer / IME 候选词     [CHN]  │
+│ [SFT]   candidate strip / pinyin buffer / cands [CHN]│
 └──────────────────────────────────────────────────────┘
 ```
 
-- **左槽 [STA]**：3 字母指示当前修饰键（SFT/CTL/ALT 持续亮，
-  ENT/BSP/ESC/`R→C` 闪 200ms）
-- **中段**：CN 模式拼音 buffer + 候选词；EN 模式空白
-- **右槽 [ENG/CHN]**：当前 IME 模式，**双击此处** 进入 debug 页面
+- **Left slot [STA]**: 3-letter modifier indicator (SFT/CTL/ALT stays lit
+  while held; ENT/BSP/ESC/`R→C` flashes for 200 ms on transient events).
+- **Middle**: pinyin buffer + candidates in CN mode; empty in EN mode.
+- **Right slot [ENG/CHN]**: current IME mode.  **Double-tap to enter
+  the debug page**.
 
 ---
 
-## 输入法用法
+## Using the IME
 
-### 全拼
+### Full pinyin
 
-CN 模式下按字母键 → 顶部候选条出现拼音 + 候选：
+Tapping letters in CN mode brings up the candidate strip:
 
 ```
 ni       → 年 你 牛奶 娘 念   (page 1/52, total 256)
@@ -223,165 +244,177 @@ nihao    → 你好 你好吗 你好啊 拟好 你好呀
 shijie   → 世界 世界上 世界杯 世界各地 世界里
 ```
 
-- **A 键** 或 **空格键** 提交当前高亮候选
-- **D-pad ←→** 移动高亮（同一页内）
-- **D-pad ↑↓** 翻页
-- **触屏** 直接点候选词提交
-- **B 键** 删拼音 buffer 一个字母
+- **A** or **Space** commits the currently highlighted candidate.
+- **D-pad ←→** moves the highlight within the current page.
+- **D-pad ↑↓** flips between pages.
+- **Tap** a candidate to commit it directly.
+- **B** consumes one letter from the pinyin buffer.
 
-### 缩写（声母）
+### Abbreviation (initials)
 
-每个多音节词都额外有一条声母拼音条目，**输入声母也能召回**（频率打 0.3
-折，所以全拼仍排在前）：
+Every multi-syllable word gets an extra entry keyed by its initials —
+typing the initials still surfaces it (with weight × 0.3, so the
+full-pinyin form still ranks first when typed in full):
 
 ```
-nh → 你好（在第 8 个候选）
-wm → 我们（首个）
+nh → 你好  (around the 8th candidate)
+wm → 我们  (top candidate)
 sj → 世界
 zw → 中文
 xx → 谢谢
 ```
 
-按 D-pad ↓ 翻页或 ←→ 移动游标找到目标后 A 键提交。
+Page or cursor over to your target, then commit with A.
 
-### Prefix 回退
+### Prefix fallback
 
-输错字母多打了一个？引擎自动用最长有效前缀匹配，红色显示多出的部分：
+Typed an extra letter past a valid prefix?  The engine automatically
+matches the longest valid prefix and shows the surplus letters in red:
 
 ```
-buffer:  niha[oz]    ← 绿色 niha + 红色 oz
-候选:    依旧显示 nihao 的结果
+buffer:  niha[oz]    ← niha in green + oz in red
+candidates:           still showing what nihao would produce
 ```
 
-按 B 键消掉红色尾巴回到正常。
+Press B to chew the red tail back to a clean prefix.
 
-### 修饰键不被 IME 拦截
+### Modifiers always bypass the IME
 
-CN 模式下按住 **Y + c** 仍然发 `Ctrl-C`，按住 **L + a** 仍然发 `A`。修饰
-键优先于 IME 路由，跑 vim/tmux/claude-code 不受影响。
+In CN mode, **hold Y + tap c** still sends `Ctrl-C`; **hold L + tap a**
+still sends `A`.  Modifiers take priority over IME routing, so
+vim / tmux / claude-code shortcuts keep working.
 
-### 误打英文逃生：A 键直出
+### Bail out: emit pinyin as English
 
-CN 模式 + 拼音 buffer 非空时，按 **A** 把 buffer 当英文 ASCII 发到 SSH
-并清空。例如不小心在 CN 模式打了 `cd /etc`：候选条会显示一堆奇怪中文，
-此时按 **A** 一次，SSH 直接收到 `cd /etc`，不用退格再切模式重打。
+CN mode + non-empty buffer + press **A** = the buffer flies to SSH as
+raw ASCII letters and clears.  Example: you accidentally typed
+`cd /etc` while in CN mode and the candidate strip is showing strange
+Chinese.  One press of **A** delivers `cd /etc` to the shell — no
+backspacing, no mode-toggle, no retyping.
 
-> 区别：**Space** 提交高亮候选（中文上屏），**A** 直接把字母原样发出去。
+> Difference: **Space** commits the highlighted candidate (Chinese
+> chars on screen).  **A** sends the typed letters as-is.
 
 ---
 
-## Debug 页面
+## Debug page
 
-**右上 ENG/CHN 双击**（500 ms 内点两次）→ 进入 debug 页面：
+**Double-tap the ENG/CHN badge** in the top-right corner (two taps within
+500 ms) to enter the debug overlay.  Single-tap the badge again to leave.
 
-- 标题 + 退出提示（再单击 CHN/ENG 即退）
-- **recv hex**：最近 32 字节 SSH 接收数据，用来排查 ANSI 协议问题
-- **物理键绑定列表**：上述按键说明的速查
-- **MASCOT: ON/OFF** 按钮：关掉螃蟹（默认 ON）
+What it shows:
+
+- Title + exit hint.
+- **recv hex**: the last 32 bytes received from SSH — for diagnosing
+  ANSI / SCS / mouse-protocol issues at the byte level.
+- **Physical key cheat sheet**: a condensed version of the bindings
+  table above.
+- **MASCOT: ON/OFF** toggle button.  Default is ON.
 
 ---
 
-## 从源码构建
+## Build from source
 
-### 依赖
+### Prerequisites
 
-- Linux x86\_64（在 Ubuntu 22.04 测过；其他发行版需要相应调整）
+- Linux x86\_64 (tested on Ubuntu 22.04; other distros need the obvious
+  package-name adjustments).
 - [devkitPro / devkitARM](https://devkitpro.org/wiki/Getting_Started)
-  release 65+，GCC 14.2.0
-- Python 3.10+ + Pillow（生成字体 + 词典）
-- ImageMagick（可选；图标处理用 Pillow 也可）
+  release 65+, GCC 14.2.0.
+- Python 3.10+ with Pillow (for font + dictionary generators).
 
-### 步骤
+### Steps
 
 ```bash
-# 1. 装 devkitPro
+# 1. Install devkitPro
 wget https://apt.devkitpro.org/install-devkitpro-pacman
 bash install-devkitpro-pacman
 sudo dkp-pacman -S 3ds-dev 3ds-mbedtls 3ds-libpng 3ds-zlib
 
-# 2. clone + 进项目
+# 2. Clone + cd
 git clone https://github.com/Fishason/DSSH.git
 cd DSSH
 
-# 3. 交叉编译 libssh2（一次性，输出到 $DEVKITPRO/portlibs/3ds/lib/）
+# 3. Cross-compile libssh2 (one-time, drops into $DEVKITPRO/portlibs/3ds/lib/)
 bash build-libssh2.sh
 
-# 4. 装系统字体（Terminus 提供 ASCII / box-drawing）
+# 4. Install system fonts (Terminus provides ASCII / box-drawing)
 sudo apt install fonts-terminus
 
-# 5. 下载字体源（Zpix）
+# 5. Fetch font sources (Zpix)
 bash tools/fetch_fonts.sh
 
-# 6. 生成字体 atlas（→ source/font_data.c，~3 MB）
+# 6. Generate the font atlas (→ source/font_data.c, ~3 MB)
 python3 tools/gen_font.py
 
-# 7. 下载 + 生成拼音词典（→ romfs/pinyin_dict.bin，~13 MB）
+# 7. Fetch + build the pinyin dictionary (→ romfs/pinyin_dict.bin, ~13 MB)
 bash tools/fetch_pinyin_dict.sh
 python3 tools/gen_pinyin_dict.py
 
-# 8. 编译 .3dsx
+# 8. Build the .3dsx
 make
 
-# 9. （可选）打 .cia
-bash tools/install_cia_tools.sh   # 装 bannertool + makerom 到 ~/bin
-make cia                           # 输出 DSSH.cia
+# 9. (Optional) build the .cia
+bash tools/install_cia_tools.sh   # installs bannertool + makerom into ~/bin
+make cia                          # → DSSH.cia
 ```
 
-### 测试 IME 引擎（host 端，不需 3DS）
+### Test the IME engine on the host (no 3DS needed)
 
 ```bash
 make test-ime
 ```
 
-会编译 `tools/test_ime.c` 链 `source/ime_pinyin.c`，跑 9 个常用查询用例
-（`ni→你`，`nihao→你好`，`nh→你好`，等等）。
+Compiles `tools/test_ime.c` linked against `source/ime_pinyin.c` and
+runs nine smoke-test queries (`ni → 你`, `nihao → 你好`, `nh → 你好`,
+etc.).
 
 ---
 
-## 项目结构
+## Project layout
 
 ```
 DSSH/
-├── 69633.PNG                  # 源图标 (162×102)
-├── icon.png                   # .3dsx / SMDH 图标 (48×48，从源图生成)
+├── 69633.PNG                  # Source icon (162×102)
+├── icon.png                   # 48×48 icon for .3dsx / SMDH (derived)
 ├── app.rsf                    # makerom CIA spec
-├── Makefile                   # 主构建（make / make cia / make test-ime）
-├── build-libssh2.sh           # libssh2 + mbedTLS ARM 交叉编译
+├── Makefile                   # Top-level build (make / make cia / make test-ime)
+├── build-libssh2.sh           # libssh2 + mbedTLS ARM cross-compile
 ├── source/
-│   ├── main.c                 # 主循环、SSH receive、UTF-8 边界
-│   ├── ssh_client.{c,h}       # libssh2 封装
-│   ├── config.{c,h}           # SD 卡 config.ini 解析
-│   ├── terminal.{c,h}         # ANSI/VT100 解析器（fork skmtrd）
-│   ├── renderer.{c,h}         # citro2d 渲染（终端、文本、CJK）
-│   ├── keyboard.{c,h}         # 物理按键 + IME 路由
-│   ├── softkb.{c,h}           # 软键盘 + 候选条 + debug 页面
-│   ├── ime_pinyin.{c,h}       # 拼音引擎
-│   ├── mascot.{c,h}           # 螃蟹吉祥物
-│   ├── font_atlas.{c,h}       # 字体索引
-│   └── font_data.c            # 字体位图（gen_font.py 生成）
+│   ├── main.c                 # Main loop, SSH receive, UTF-8 reassembly
+│   ├── ssh_client.{c,h}       # libssh2 wrapper
+│   ├── config.{c,h}           # SD-card config.ini parser
+│   ├── terminal.{c,h}         # ANSI/VT100 parser (forked from skmtrd)
+│   ├── renderer.{c,h}         # citro2d rendering (terminal, text, CJK)
+│   ├── keyboard.{c,h}         # Physical buttons + IME routing
+│   ├── softkb.{c,h}           # Soft keyboard + candidate strip + debug page
+│   ├── ime_pinyin.{c,h}       # Pinyin engine
+│   ├── mascot.{c,h}           # Crab mascot
+│   ├── font_atlas.{c,h}       # Codepoint → glyph index
+│   └── font_data.c            # Font bitmaps (gen_font.py output)
 ├── tools/
-│   ├── fetch_fonts.sh         # 下载 Zpix
-│   ├── gen_font.py            # 字体 atlas 生成器
-│   ├── fetch_pinyin_dict.sh   # 下载 rime-ice
-│   ├── gen_pinyin_dict.py     # 词典 → 二进制
-│   ├── test_ime.{c,sh}        # host 端 IME 测试
-│   ├── gen_cia_assets.py      # 图标/banner 派生
-│   └── install_cia_tools.sh   # bannertool + makerom 安装
-├── romfs/                     # gitignored — 装载 pinyin_dict.bin
-├── data/                      # gitignored — 字体源 + 词典源
-└── sd_template/               # SD 卡部署模板
+│   ├── fetch_fonts.sh         # Download Zpix
+│   ├── gen_font.py            # Font atlas generator
+│   ├── fetch_pinyin_dict.sh   # Download rime-ice
+│   ├── gen_pinyin_dict.py     # Dictionary → binary
+│   ├── test_ime.{c,sh}        # Host-side IME smoke test
+│   ├── gen_cia_assets.py      # Icon / banner derivation
+│   └── install_cia_tools.sh   # bannertool + makerom installer
+├── romfs/                     # gitignored — packs pinyin_dict.bin
+├── data/                      # gitignored — font + dict sources
+└── sd_template/               # SD-card deployment template
     ├── README.md
     └── 3ds/3dssh/config.ini.example
 ```
 
-## 架构概览
+## Architecture
 
 ```
 SSH server (somewhere on the internet)
      ▲ libssh2 over mbedTLS-RSA-4096
      │
 ┌────┴──────────────────────────────────────────────────┐
-│  main.c poll loop @60fps                              │
+│  main.c poll loop @ 60 fps                            │
 │   ├─ ssh_read → softkb_record_recv → utf8 reassemble  │
 │   │                ↓                                  │
 │   │   terminal_write_n → ANSI parser → cell grid      │
@@ -400,31 +433,34 @@ SSH server (somewhere on the internet)
    GPU (top 400×240 + bottom 320×240, 24-bit color)
 ```
 
-详细 milestone 进度参见 commit history（M0 → M9 全部提交）。
+The build went through milestones M0 → M9; see the commit history for
+the full progression.
 
 ---
 
-## 致谢
+## Credits
 
-- **[skmtrd/3dssh](https://github.com/skmtrd/3dssh)** — 原日文版，复用了
-  ANSI/VT100 解析器、UTF-8 边界处理、citro2d 框架基础
-- **[rime-ice](https://github.com/iDvel/rime-ice)** — 拼音词典源
-  （commit `3f57a6f6` pin）
+- **[skmtrd/3dssh](https://github.com/skmtrd/3dssh)** — the original
+  Japanese-localized 3DS SSH client; DSSH reuses its ANSI/VT100 parser,
+  UTF-8 reassembly, and citro2d framing.
+- **[rime-ice](https://github.com/iDvel/rime-ice)** — pinyin dictionary
+  source (pinned at commit `3f57a6f6`).
 - **[Zpix Pixel Font](https://github.com/SolidZORO/zpix-pixel-font)** —
-  12px CJK 像素字体（OFL 1.1）
-- **[Terminus TTF](https://terminus-font.sourceforge.net/)** — ASCII /
-  box-drawing 像素字体
+  12 px CJK pixel font (OFL 1.1).
+- **[Terminus TTF](https://terminus-font.sourceforge.net/)** — ASCII
+  and box-drawing pixel font.
 - **[libssh2](https://www.libssh2.org/)** + **[mbedTLS](https://www.trustedfirmware.org/projects/mbed-tls/)** —
-  SSH/TLS 协议栈
+  SSH / TLS protocol stack.
 - **[devkitPro](https://devkitpro.org/) libctru / citro2d / citro3d** —
-  3DS 用户态运行时 + 渲染
+  3DS user-mode runtime and rendering.
 - **[carstene1ns/3ds-bannertool](https://github.com/carstene1ns/3ds-bannertool)**
   + **[3DSGuy/Project_CTR makerom](https://github.com/3DSGuy/Project_CTR)** —
-  CIA 打包工具
+  CIA packaging tools.
 
 ## License
 
-MIT — 见 [LICENSE](LICENSE)。
+MIT — see [LICENSE](LICENSE).
 
-字体、词典、上游 SSH/TLS 库各有各的许可证（OFL / GPL / BSD / MIT），
-分发二进制时请遵守对应条款。
+The bundled fonts, dictionary, and upstream SSH/TLS libraries each
+have their own licenses (OFL / GPL / BSD / MIT / Apache).  Respect
+those when redistributing the binary.
