@@ -236,19 +236,41 @@ def render_rows_baseline(cp, fnt, w, h):
 
 
 def render_rows_centered(cp, fnt, w, h):
-    """Ink-bbox centered render. Best for isolated symbols / icons."""
+    """Ink-bbox centered render. Best for isolated symbols / icons.
+
+    For glyphs whose ink box is WIDER than the cell (Powerline caps
+    E0B4/E0B6, some MDI icons), the naive centered draw places ink
+    outside the cell.  Detect that case and fall through to a
+    proportional resize so the ink at least shows up — even if
+    horizontally squished, a rounded-cap or icon silhouette is more
+    useful than a `?`. """
     img = Image.new("L", (w, h), 0)
     draw = ImageDraw.Draw(img)
     try:
         bbox = fnt.getbbox(chr(cp))
-        if bbox and bbox[2] > bbox[0]:
-            cw = bbox[2] - bbox[0]
-            ch2 = bbox[3] - bbox[1]
+        if not (bbox and bbox[2] > bbox[0]):
+            return render_rows_pixels_to_bits(img, w, h)
+        cw  = bbox[2] - bbox[0]
+        ch2 = bbox[3] - bbox[1]
+
+        if cw <= w and ch2 <= h:
+            # Fits — center directly in the cell.
             ox = max(0, (w - cw) // 2) - bbox[0]
             oy = max(0, (h - ch2) // 2) - bbox[1]
             draw.text((ox, oy), chr(cp), font=fnt, fill=255)
-        else:
-            draw.text((0, 0), chr(cp), font=fnt, fill=255)
+            return render_rows_pixels_to_bits(img, w, h)
+
+        # Too big for the cell — render to a canvas matching the bbox,
+        # then resize down to (w, h).  Lossy but preserves silhouette.
+        bw = max(1, cw)
+        bh = max(1, ch2)
+        big = Image.new("L", (bw, bh), 0)
+        ImageDraw.Draw(big).text((-bbox[0], -bbox[1]),
+                                 chr(cp), font=fnt, fill=255)
+        # Threshold + resize so we don't get gray-squashed lines that
+        # vanish below THRESHOLD.  L→1-bit→L round-trip keeps edges crisp.
+        big = big.point(lambda v: 255 if v >= THRESHOLD else 0)
+        img = big.resize((w, h), Image.LANCZOS)
     except Exception:
         pass
     return render_rows_pixels_to_bits(img, w, h)
@@ -286,40 +308,52 @@ def is_empty_or_notdef(rows, font_notdef):
 
 
 # ── narrow glyph generation ────────────────────────────────────
-# Fallback chain depends on whether the cp is a yazi icon or not:
+# Fallback chain (each step rejects per-font notdef + empty):
 #
-# yazi cps (Devicons / Codicons / MDI v3 — only Nerd Font has them):
-#   Nerd Font ink-centered  (priority)
-#   -> empty (no fallback worth trying — these glyphs are unique to NF)
-#
-# Other cps (ASCII / Latin / box-draw / arrows / common Powerline):
-#   Terminus baseline-anchored  (ASCII / box-draw, Terminus's strong area)
-#   -> DejaVu ink-centered      (broader symbol coverage)
-#   -> Nerd Font ink-centered   (icons in 0xE000-0xF900 PUA)
-#   -> Zpix ink-centered        (geometric shapes ○●■□▲▼)
+# Nerd Font cps in the yazi set get NF first (most Devicons / MDI v3
+# only exist there); everything else starts with Terminus.  Both paths
+# end in NF / DejaVu / Zpix as further fallbacks, so an icon that NF
+# happens to lack still gets a chance to render through DejaVu's
+# ▢/▶/▮/⛶ glyphs.
 #
 # If everything returns notdef, drop from CHAR_MAP so the C-side
 # fallback_alias() in font_atlas.c can substitute a similar glyph.
+def render_with_chain(cp, fonts):
+    """Try each (font, render_fn, notdef) in order; first non-notdef wins.
+    `fonts` is a list of (font_obj, render_fn, notdef_rows) tuples."""
+    for fnt, rfn, nd in fonts:
+        if fnt is None:
+            continue
+        rows = rfn(cp, fnt, CELL_W, CELL_H)
+        if not is_empty_or_notdef(rows, nd):
+            return rows
+    return [0] * CELL_H
+
+# Two chains.  The "icon-first" chain is used for cps yazi explicitly
+# pulls from Nerd Font (Devicons / Codicons / MDI / Powerline caps).
+# The "text-first" chain is the default for everything else.
+icon_first = [
+    (font_nerd,    render_rows_centered, notdef_nerd),
+    (font_narrow,  render_rows_baseline, notdef_terminus),
+    (font_symbols, render_rows_centered, notdef_dejavu),
+    (font_wide,    render_rows_centered, notdef_zpix),
+]
+text_first = [
+    (font_narrow,  render_rows_baseline, notdef_terminus),
+    (font_symbols, render_rows_centered, notdef_dejavu),
+    (font_nerd,    render_rows_centered, notdef_nerd),
+    (font_wide,    render_rows_centered, notdef_zpix),
+]
+
 glyph_bitmaps = [[0] * CELL_H for _ in range(NGLYPHS)]
 empty_cps = set()
 for cp, atlas_idx in CHAR_MAP.items():
-    if cp in yazi_icons_set:
-        if font_nerd is not None:
-            rows = render_rows_centered(cp, font_nerd, CELL_W, CELL_H)
-            if is_empty_or_notdef(rows, notdef_nerd):
-                rows = [0] * CELL_H
-        else:
-            rows = [0] * CELL_H
-    else:
+    chain = icon_first if cp in yazi_icons_set else text_first
+    # ASCII (cp <= 0x7E) sticks to baseline through Terminus regardless.
+    if cp <= 0x7E:
         rows = render_rows_baseline(cp, font_narrow, CELL_W, CELL_H)
-        if cp > 0x7E and is_empty_or_notdef(rows, notdef_terminus) and font_symbols is not None:
-            rows = render_rows_centered(cp, font_symbols, CELL_W, CELL_H)
-            if is_empty_or_notdef(rows, notdef_dejavu) and font_nerd is not None:
-                rows = render_rows_centered(cp, font_nerd, CELL_W, CELL_H)
-                if is_empty_or_notdef(rows, notdef_nerd) and font_wide is not None:
-                    rows = render_rows_centered(cp, font_wide, CELL_W, CELL_H)
-                    if is_empty_or_notdef(rows, notdef_zpix):
-                        rows = [0] * CELL_H
+    else:
+        rows = render_with_chain(cp, chain)
     if all(b == 0 for b in rows) and cp > 0x7E:
         empty_cps.add(cp)
     else:

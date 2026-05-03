@@ -1,9 +1,15 @@
-# yazi default-theme icon codepoints (extracted from
-# https://github.com/sxyazi/yazi/blob/main/yazi-config/preset/theme-dark.toml).
-# 282 unique non-ASCII cps spanning Devicons / Codicons / FA
-# / Octicons / MDI v2+v3 (incl. supplementary plane U+F0001+).
-# One hex codepoint per line, # for comments, regenerate with
-#   tools/extract_yazi_icons.py (TODO: ad-hoc; re-run yourself if needed)
+# yazi default-theme icon codepoints — extracted from
+# https://github.com/sxyazi/yazi/tree/main/yazi-config/preset/
+# (theme-dark/light + yazi-default + keymap-default + vfs-default).
+# Covers icon_info/warn/error, marker_symbol, border_symbol,
+# tab/indicator/padding Powerline caps (U+E0B4/E0B6),
+# every file-type icon, codicons, and MDI v3 in supplementary
+# plane (U+F0001..U+F1FFF).  True emoji blocks intentionally
+# omitted (Nerd Font Symbols-Only doesn't ship them).
+# Total: 288 cps.
+0x02502
+0x0E0B4
+0x0E0B6
 0x0E21C
 0x0E244
 0x0E271
@@ -142,6 +148,7 @@
 0x0E8D1
 0x0E8D3
 0x0E8D9
+0x0EA9C
 0x0EAC4
 0x0EAE8
 0x0EAEB
@@ -160,7 +167,9 @@
 0x0F031
 0x0F054
 0x0F057
+0x0F05A
 0x0F06D
+0x0F071
 0x0F073
 0x0F076
 0x0F08D
