@@ -6,23 +6,26 @@
 /*
  * Q-style salmon-pink crab — Anthropic Claude vibe at chibi scale.
  *
- * Sprite: 18 px wide × 12 px tall, drawn as one C2D_DrawRectSolid call
- * per lit pixel.  Compared to the v0.3.0 sprite we now have:
+ * Sprite: 18 px wide × 13 px tall, drawn one C2D_DrawRectSolid per
+ * lit pixel (~70 rects/frame, trivial).
  *
- *   - 3-tone body shading: a light row at the top, main pink in the
- *     middle, a darker row at the bottom — gives the silhouette a
- *     2.5-D feel (overhead light, ground shadow) without needing
- *     proper 3D rendering at this scale.
- *   - Bigger Q-style eyes: a 3×3 white-sclera block with a single
- *     1-px black pupil dead center.  Reads as "alive" much more than
- *     the previous flat 2×2 black squares.
- *   - Walking bob: anim_frame 1 and 3 raise the body by 1 px, so
- *     between leg lifts the crab visibly bounces.
- *   - Occasional blink: every ~3 seconds the eye rows briefly squash
- *     to a single 2-px black bar (`-`) for ~6 frames, then re-open.
+ * Compared to the v0.3-polish-3 version this redesign drops the
+ * 4-leg horizontal-glide gait for a 2-leg arcing biped walk:
  *
- * State machine unchanged from v0.3.0:
- *   WALK / IDLE / FLEE / ALERT — see mascot.h.
+ *   - Two big chunky feet (4-px wide, ~5 px apart) instead of 4 thin
+ *     legs.  More cartoon, less centipede.
+ *   - 4-frame walk cycle: rest → right foot arcs forward → rest →
+ *     left foot arcs.  Lifted foot is drawn one row higher and
+ *     slightly forward of the planted foot, the body bobs up 1 px
+ *     during each lift — gives the silhouette the "duang duang"
+ *     bouncy thump the user wants.
+ *   - Q-style 3×3 white-sclera eyes with single black pupil, ~3 sec
+ *     blink rhythm preserved from the previous version.
+ *   - 3-tone salmon body shading (highlight top / main / shadow
+ *     bottom) for a 2.5-D feel.
+ *
+ * State machine unchanged — see mascot.h.  ALERT freezes the walk
+ * cycle, suppresses the blink, and overlays a red ✕ that sways.
  */
 
 typedef enum {
@@ -42,28 +45,28 @@ struct mascot_t {
     int   anim_frame;     /* 0..3 walk cycle */
     int   anim_timer;
     int   bob_phase;      /* 0..59, drives idle bob */
-    int   blink_phase;    /* 0..179, eye-blink counter */
-    int   alert_phase;    /* X waving when alerting */
+    int   blink_phase;    /* 0..179, drives eye blinks */
+    int   alert_phase;    /* drives ✕ sway when alerting */
 };
 
 #define CRAB_W   18
-#define CRAB_H   12
+#define CRAB_H   13
 #define HIT_PAD  4
 
 /* 3-tone salmon body palette */
-#define COL_HL    0xf2bcabff   /* highlight (top row + transitions) */
-#define COL_BODY  0xe89b89ff   /* main pink */
-#define COL_SHD   0xc4756aff   /* shadow (bottom transition) */
+#define COL_HL    0xf2bcabff
+#define COL_BODY  0xe89b89ff
+#define COL_SHD   0xc4756aff
 /* Eyes */
-#define COL_EYE   0x000000ff   /* black pupil */
-#define COL_SCL   0xffffffff   /* white sclera */
+#define COL_EYE   0x000000ff
+#define COL_SCL   0xffffffff
 /* Alert */
-#define COL_X     0xe54040ff   /* red ✕ */
+#define COL_X     0xe54040ff
 
-/* Body sprite — char palette: H = highlight, @ = body, S = shadow,
- * w = sclera, # = pupil, . = transparent.  Rows 0-9 are body; legs
- * occupy rows 10-11 with frame-dependent patterns below.  Eye rows
- * 3-5 get overridden when blinking. */
+/* Body sprite (rows 0-9).  Char palette:
+ *   H = highlight   @ = body main   S = shadow
+ *   w = sclera      # = pupil       . = transparent
+ * Eye rows 3-5 get overridden when blinking. */
 static const char *const crab_body_open[10] = {
     "...HHHHHHHHHHHH...",   /* 0  highlight arc */
     ".HHHH@@@@@@@@HHHH.",   /* 1  highlight transition */
@@ -77,33 +80,42 @@ static const char *const crab_body_open[10] = {
     "...SSSSSSSSSSSS...",   /* 9  bottom arc */
 };
 
-/* Eye area when blinking — replaces rows 3-5.  Eyes squash to a single
- * 2-px-wide black bar on row 4 (the pupil row), giving a `-` look. */
+/* Eye area when blinking — replaces rows 3-5 with a flat body row +
+ * a single 2-px black pupil bar at row 4. */
 static const char *const crab_body_blink[3] = {
-    "@@@@@@@@@@@@@@@@@@",   /* row 3 — sclera covered by body */
-    "@@@@##@@@@@@##@@@@",   /* row 4 — pupil-only blink line */
-    "@@@@@@@@@@@@@@@@@@",   /* row 5 — sclera covered by body */
+    "@@@@@@@@@@@@@@@@@@",
+    "@@@@##@@@@@@##@@@@",
+    "@@@@@@@@@@@@@@@@@@",
 };
 
-/* 4-frame leg cycle on rows 10-11.  Four legs at cols 2-3, 6-7, 11-12,
- * 15-16; rest pose has all 4 touching ground.  Frames 1/3 lift
- * alternate pairs by removing the lower row only. */
-static const char *const crab_legs[4][2] = {
-    /* frame 0: rest, all 4 down */
-    { "..@@..@@...@@..@@.",
-      "..@@..@@...@@..@@." },
-    /* frame 1: legs 1 and 3 lifted */
-    { "..@@..@@...@@..@@.",
-      "......@@.......@@." },
-    /* frame 2: rest */
-    { "..@@..@@...@@..@@.",
-      "..@@..@@...@@..@@." },
-    /* frame 3: legs 2 and 4 lifted */
-    { "..@@..@@...@@..@@.",
-      "..@@.......@@....." },
+/* 4-frame leg cycle on rows 10-12.  Two thick legs:
+ *
+ *   left  trunk cols 3-4   foot 2-5 (4-wide)
+ *   right trunk cols 13-14 foot 12-15 (4-wide)
+ *
+ * In the lift frames (1, 3) the airborne foot moves up to row 11
+ * and the corresponding shin row 11 is empty — reads as "foot in
+ * mid-arc above the ground". */
+static const char *const crab_legs[4][3] = {
+    /* frame 0: rest, both feet on the ground */
+    { "...@@........@@...",
+      "...@@........@@...",
+      "..@@@@......@@@@.." },
+    /* frame 1: right foot lifted and arcing */
+    { "...@@........@@...",
+      "...@@.......@@@@..",
+      "..@@@@............" },
+    /* frame 2: rest again — short pause between strides */
+    { "...@@........@@...",
+      "...@@........@@...",
+      "..@@@@......@@@@.." },
+    /* frame 3: left foot lifted and arcing */
+    { "...@@........@@...",
+      "..@@@@.......@@...",
+      "............@@@@.." },
 };
 
-/* 5×5 red ✕ for ALERT.  Drawn above the body, swaying ±1 px. */
+/* 5×5 red ✕ for ALERT. */
 static const char *const alert_x[5] = {
     "@...@",
     ".@.@.",
@@ -174,17 +186,16 @@ static void clamp_and_bounce(mascot_t *m, int *hit_wall) {
 void mascot_update(mascot_t *m) {
     if (!m) return;
 
-    /* 4-frame walk cycle: advance every 6 frames in WALK/FLEE. */
+    /* Walk cycle: advance every 8 frames in WALK/FLEE.  Slower than
+     * the v0.3 version (was 6) so the duang-duang rhythm reads as
+     * heavy thumping rather than a quick scuttle. */
     if (m->state == STATE_WALK || m->state == STATE_FLEE) {
-        if (++m->anim_timer >= 6) {
+        if (++m->anim_timer >= 8) {
             m->anim_timer = 0;
             m->anim_frame = (m->anim_frame + 1) & 3;
         }
     }
     m->bob_phase   = (m->bob_phase + 1) % 60;
-    /* Blink runs in any non-alert state — even when idle/fleeing the
-     * crab still occasionally blinks.  Period 180 = 3 seconds at 60 fps;
-     * the eye is closed for the first 6 frames of each cycle (~100 ms). */
     if (m->state != STATE_ALERT) {
         m->blink_phase = (m->blink_phase + 1) % 180;
     }
@@ -215,7 +226,6 @@ void mascot_update(mascot_t *m) {
     }
 }
 
-/* Map a sprite character to its color, or 0 for transparent. */
 static uint32_t color_for_char(char ch) {
     switch (ch) {
         case 'H': return COL_HL;
@@ -232,20 +242,18 @@ void mascot_draw(mascot_t *m) {
     int xi = (int)m->fx;
     int yi = m->y_top;
 
-    /* Idle bob: small 1-px vertical wiggle every ~8 frames. */
+    /* Idle bob: small 1-px wiggle every ~8 frames. */
     if (m->state == STATE_IDLE && ((m->bob_phase / 8) & 1)) yi -= 1;
-    /* Walk bob: anim_frame 1 and 3 lift the body 1 px (puts a
-     * spring-step rhythm in the silhouette). */
+
+    /* Walk bob: body lifts 1 px on the leg-arc frames (1 and 3) so
+     * the silhouette pulses up-down-up-down — the "duang duang" beat. */
     int body_dy = 0;
     if ((m->state == STATE_WALK || m->state == STATE_FLEE) &&
         (m->anim_frame & 1)) body_dy = -1;
 
-    /* Choose eye art — closed for the first 6 frames of each blink
-     * cycle, otherwise the open 3-row sclera+pupil. */
     int blinking = (m->state != STATE_ALERT) && (m->blink_phase < 6);
 
-    /* Body rows 0-9.  Rows 3-5 either show open eyes or the blink line
-     * depending on `blinking`. */
+    /* Body rows 0-9 — bob with body_dy. */
     for (int row = 0; row < 10; row++) {
         const char *src = crab_body_open[row];
         if (blinking && row >= 3 && row <= 5)
@@ -260,12 +268,14 @@ void mascot_draw(mascot_t *m) {
         }
     }
 
-    /* Legs (rows 10-11).  Stay anchored to the ground (no body_dy)
-     * during the walk cycle so the body bobs up and the feet stay
-     * planted — gives the cleanest "stride" look at this resolution. */
+    /* Legs rows 10-12 — anchored at full y_top regardless of body
+     * bob.  When the body bobs up 1 px there's a 1-row gap between
+     * body bottom and leg top that reads as the body "lifting off
+     * the ground".  Lifted foot in this frame is drawn at row 11
+     * (one row higher than rest), making the leg look mid-arc. */
     int frame = (m->state == STATE_ALERT || m->state == STATE_IDLE)
               ? 0 : m->anim_frame;
-    for (int row = 0; row < 2; row++) {
+    for (int row = 0; row < 3; row++) {
         const char *src = crab_legs[frame][row];
         for (int col = 0; col < CRAB_W; col++) {
             if (src[col] == '@') {
@@ -276,8 +286,7 @@ void mascot_draw(mascot_t *m) {
         }
     }
 
-    /* Red ✕ overlay for ALERT — the warning sign the crab waves to
-     * tell the user the network is unresponsive. */
+    /* Red ✕ overlay for ALERT. */
     if (m->state == STATE_ALERT) {
         u32 x_c = rgba_to_c2d(COL_X);
         int sway = ((m->alert_phase / 12) & 1) ? 1 : -1;

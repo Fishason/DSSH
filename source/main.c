@@ -149,9 +149,9 @@ int main(int argc, char *argv[]) {
     keyboard_t *kbd  = keyboard_init();
     /* Mascot lives in the bottom row (y=214..239, 26 px tall).  Clock
      * occupies x=2..67 on the left; mascot scampers in x=72..302 on
-     * the right.  Crab is 12 px tall so y_top = 214 + (26-12)/2 = 221
-     * vertically centers it in the row. */
-    mascot_t   *mc   = mascot_init(72, 302, 221);
+     * the right.  Crab is 13 px tall (10-row body + 3-row legs) so
+     * y_top = 214 + (26-13)/2 = 220 centers it in the row. */
+    mascot_t   *mc   = mascot_init(72, 302, 220);
     /* IME loads later (after the M7 banner pumps); softkb tolerates
      * a NULL ime by falling back to passthrough in CN mode. */
     ime_t      *ime  = NULL;
@@ -245,20 +245,22 @@ idle_loop:
         char rbuf[READ_BUFSZ];
         (void)status_buf; (void)status_color;  /* not currently rendered */
 
-        /* Interactive-stall detection (5 s): after the user sends bytes
-         * (g_last_tx_at), if no response (echo, output, keepalive ack)
-         * comes back within 5 s, the network is broken in the way the
-         * user actually notices.  The alert clears the instant any
-         * byte arrives.
+        /* ALERT triggers (mascot raises the red ✕):
          *
-         * No idle-stall rule.  When the user isn't typing they aren't
-         * waiting for anything, so a silently broken link during an
-         * idle period is not worth flagging — it would just produce
-         * false positives when the keepalive ack happens to drop. */
+         *  - Interactive-stall (5 s): user sent bytes more recently than
+         *    we've received any reply, and no reply has come for 5 s.
+         *    Means the user is actively waiting and not getting through.
+         *
+         *  - Hard disconnect: ssh_read returned < 0 — libssh2 detected
+         *    the socket is dead.  Once this fires we never recover in-
+         *    session (no auto-reconnect logic), so the alert stays on
+         *    until the user exits and relaunches DSSH.  Replaces the
+         *    old "[disconnected]" terminal banner. */
         const int STALL_TX_NORX_S = 5;
         time_t last_rx_at = time(NULL);
         g_last_tx_at      = last_rx_at;
         int    stall_alert = 0;
+        int    ssh_dead    = 0;
 
         while (aptMainLoop()) {
             hidScanInput();
@@ -280,20 +282,21 @@ idle_loop:
                     feed_terminal(term, rbuf, n);
                     last_rx_at = time(NULL);
                 } else if (n < 0) {
-                    terminal_write(term, "\r\n\x1b[31m[disconnected]\x1b[0m\r\n");
+                    /* Hard disconnect — silent.  Mascot raises ✕ via
+                     * the ssh_dead flag below; no terminal banner. */
                     ssh_disconnect(ssh);
                     ssh = NULL;
+                    ssh_dead = 1;
                 }
             }
 
-            /* Interactive-stall: only flag when the user has typed
-             * something more recently than the last reply, and that
-             * typed-but-unacked window has been open longer than
-             * STALL_TX_NORX_S.  Idle periods can never trigger this. */
+            /* ALERT = hard disconnect, OR active interactive stall. */
             time_t now_t = time(NULL);
-            int want_alert = ssh && ssh_is_connected(ssh) &&
-                             g_last_tx_at > last_rx_at &&
-                             (now_t - g_last_tx_at) > STALL_TX_NORX_S;
+            int interactive_stall =
+                ssh && ssh_is_connected(ssh) &&
+                g_last_tx_at > last_rx_at &&
+                (now_t - g_last_tx_at) > STALL_TX_NORX_S;
+            int want_alert = ssh_dead || interactive_stall;
             if (want_alert != stall_alert) {
                 stall_alert = want_alert;
                 mascot_set_alert(mc, stall_alert);
