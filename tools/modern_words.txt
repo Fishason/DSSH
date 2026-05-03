@@ -1,0 +1,98 @@
+# Curated modern vocabulary (~2024-2025) that rime-ice's weight-trimmed
+# top-300k may underweight or miss entirely.  Format mirrors a rime-ice
+# yaml dict — the `---` ... `...` block delimits the entries.
+#
+# Each entry: <word>\t<space-separated-pinyin>\t<weight>
+# Weight 800000 puts these above most multi-syllable rime-ice entries
+# while still leaving room for very-high-frequency single chars.
+---
+name: modern_words
+version: "1.0"
+sort: by_weight
+...
+
+# === AI / LLM 圈 ===
+大语言模型	da yu yan mo xing	1000000
+大模型	da mo xing	950000
+语言模型	yu yan mo xing	900000
+人工智能	ren gong zhi neng	950000
+生成式人工智能	sheng cheng shi ren gong zhi neng	850000
+生成式	sheng cheng shi	850000
+提示词	ti shi ci	900000
+提示工程	ti shi gong cheng	800000
+思维链	si wei lian	850000
+思维树	si wei shu	800000
+上下文窗口	shang xia wen chuang kou	820000
+长上下文	chang shang xia wen	820000
+涌现能力	yong xian neng li	800000
+推理能力	tui li neng li	820000
+微调	wei tiao	900000
+预训练	yu xun lian	850000
+量化模型	liang hua mo xing	800000
+检索增强	jian suo zeng qiang	820000
+检索增强生成	jian suo zeng qiang sheng cheng	800000
+智能体	zhi neng ti	900000
+多模态	duo mo tai	900000
+多模态模型	duo mo tai mo xing	820000
+向量化	xiang liang hua	820000
+嵌入向量	qian ru xiang liang	800000
+知识蒸馏	zhi shi zheng liu	800000
+模型对齐	mo xing dui qi	820000
+工具调用	gong ju diao yong	820000
+函数调用	han shu diao yong	820000
+注意力机制	zhu yi li ji zhi	820000
+强化学习	qiang hua xue xi	850000
+深度学习	shen du xue xi	900000
+联邦学习	lian bang xue xi	800000
+自监督	zi jian du	800000
+
+# === Names ===
+克劳德	ke lao de	850000
+通义	tong yi	820000
+文心	wen xin	820000
+豆包	dou bao	820000
+智谱	zhi pu	820000
+
+# === 编程 / DevOps ===
+编程助手	bian cheng zhu shou	850000
+代码助手	dai ma zhu shou	850000
+代码补全	dai ma bu quan	850000
+代码生成	dai ma sheng cheng	850000
+代理编程	dai li bian cheng	820000
+配对编程	pei dui bian cheng	800000
+持续集成	chi xu ji cheng	850000
+持续部署	chi xu bu shu	820000
+容器化	rong qi hua	850000
+云原生	yun yuan sheng	900000
+微服务	wei fu wu	900000
+低代码	di dai ma	820000
+零信任	ling xin ren	800000
+边缘计算	bian yuan ji suan	800000
+单元测试	dan yuan ce shi	850000
+
+# === 互联网 / 网络新词 ===
+内卷	nei juan	950000
+躺平	tang ping	950000
+佛系	fo xi	900000
+社恐	she kong	900000
+社牛	she niu	900000
+破防	po fang	900000
+摆烂	bai lan	900000
+拿捏	na nie	850000
+凡尔赛	fan er sai	850000
+弹幕	dan mu	950000
+名场面	ming chang mian	820000
+真香	zhen xiang	900000
+上头	shang tou	850000
+翻车	fan che	850000
+神仙打架	shen xian da jia	800000
+抽象	chou xiang	900000
+emo	emo	800000
+
+# === 现代技术 ===
+区块链	qu kuai lian	900000
+元宇宙	yuan yu zhou	850000
+数字孪生	shu zi luan sheng	820000
+量子计算	liang zi ji suan	850000
+卷积神经网络	juan ji shen jing wang luo	800000
+循环神经网络	xun huan shen jing wang luo	800000

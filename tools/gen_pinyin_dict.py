@@ -52,7 +52,14 @@ DICT_FILES = [
 BLOCKED_WORDS = {
     "江泽民",
     "江泽民同志",
+    "三国群英传",
 }
+
+# Optional curated word list — 2024-2025 vocabulary that rime-ice's
+# weight-trimmed top-300k may not cover well (LLM/AI terms, recent
+# internet slang, modern tech).  Format mirrors rime-ice yaml entries
+# after the `...` document end marker:  `<word>\t<pinyin>\t<weight>`.
+MODERN_WORDS_FILE = "tools/modern_words.txt"
 
 # Per-syllable abbreviation: the first letter of every syllable.  Adding
 # entries with the abbreviated pinyin lets users type "nh" and still
@@ -128,6 +135,20 @@ def main():
               f"(running total: {len(entries):>7})")
     if skipped_blocked:
         print(f"  blocked: {skipped_blocked} entries removed by BLOCKED_WORDS")
+
+    # Phase 1b: overlay curated modern-vocabulary entries.  These
+    # bypass the trim cut-off below by virtue of their high weight.
+    modern_path = ROOT / MODERN_WORDS_FILE
+    if modern_path.exists():
+        added = 0
+        for word, pinyin, weight, syl in parse_dict_file(modern_path):
+            if word in BLOCKED_WORDS:
+                continue
+            key = (word, pinyin)
+            if key not in entries or weight > entries[key][0]:
+                entries[key] = (weight, syl)
+                added += 1
+        print(f"  {MODERN_WORDS_FILE:<22} +{added:>7} curated modern entries")
 
     if not entries:
         sys.exit("FATAL: no entries parsed")
