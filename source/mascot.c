@@ -4,25 +4,25 @@
 #include <stdint.h>
 
 /*
- * Salmon-pink crab mascot — Anthropic-Claude style.
+ * Q-style salmon-pink crab — Anthropic Claude vibe at chibi scale.
  *
- * Sprite: 18 px wide × 11 px tall, drawn as one C2D_DrawRectSolid call
- * per lit pixel (~50-70 rects/frame, trivial vs the terminal grid).
+ * Sprite: 18 px wide × 12 px tall, drawn as one C2D_DrawRectSolid call
+ * per lit pixel.  Compared to the v0.3.0 sprite we now have:
  *
- * Body shape is a squat rounded rectangle with two black-square eyes
- * inset near the top.  Legs are 4 short stubs at the bottom that
- * animate through a 4-frame walk cycle for a "scuttle" rhythm —
- * frame 0/2 = rest, frame 1 lifts legs 1&3, frame 3 lifts legs 2&4.
+ *   - 3-tone body shading: a light row at the top, main pink in the
+ *     middle, a darker row at the bottom — gives the silhouette a
+ *     2.5-D feel (overhead light, ground shadow) without needing
+ *     proper 3D rendering at this scale.
+ *   - Bigger Q-style eyes: a 3×3 white-sclera block with a single
+ *     1-px black pupil dead center.  Reads as "alive" much more than
+ *     the previous flat 2×2 black squares.
+ *   - Walking bob: anim_frame 1 and 3 raise the body by 1 px, so
+ *     between leg lifts the crab visibly bounces.
+ *   - Occasional blink: every ~3 seconds the eye rows briefly squash
+ *     to a single 2-px black bar (`-`) for ~6 frames, then re-open.
  *
- * State machine:
- *   WALK    horizontal traversal between [x_min, x_max - W], 0.5 px/f.
- *   IDLE    randomly entered from WALK; bobs in place 1-3 sec.
- *   FLEE    triggered by mascot_on_touched — runs opposite the touch
- *           at 2 px/f for ~1 sec, or until a wall stops it.
- *   ALERT   set by main.c when the SSH connection has stalled (no
- *           bytes received for STALL_THRESHOLD seconds, including
- *           libssh2 keepalive replies).  Crab stops dead and holds
- *           up a red ✕, waving it gently until alert clears.
+ * State machine unchanged from v0.3.0:
+ *   WALK / IDLE / FLEE / ALERT — see mascot.h.
  */
 
 typedef enum {
@@ -34,61 +34,76 @@ typedef enum {
 
 struct mascot_t {
     int   x_min, x_max, y_top;
-    float fx;             /* sub-pixel x */
-    int   facing;         /* -1 left, +1 right */
+    float fx;
+    int   facing;
     mascot_state_t state;
-    mascot_state_t prev_state;  /* state to return to after ALERT clears */
+    mascot_state_t prev_state;
     int   state_frames;
-    int   anim_frame;     /* 0..3 leg cycle */
+    int   anim_frame;     /* 0..3 walk cycle */
     int   anim_timer;
-    int   bob_phase;
-    int   alert_phase;    /* used by ALERT for X waving */
+    int   bob_phase;      /* 0..59, drives idle bob */
+    int   blink_phase;    /* 0..179, eye-blink counter */
+    int   alert_phase;    /* X waving when alerting */
 };
 
 #define CRAB_W   18
-#define CRAB_H   11
+#define CRAB_H   12
 #define HIT_PAD  4
 
-#define COL_BODY  0xe89b89ff   /* salmon pink — Anthropic-ish */
-#define COL_EYE   0x000000ff   /* black square eyes */
-#define COL_X     0xe54040ff   /* red ✕ for the alert sign */
+/* 3-tone salmon body palette */
+#define COL_HL    0xf2bcabff   /* highlight (top row + transitions) */
+#define COL_BODY  0xe89b89ff   /* main pink */
+#define COL_SHD   0xc4756aff   /* shadow (bottom transition) */
+/* Eyes */
+#define COL_EYE   0x000000ff   /* black pupil */
+#define COL_SCL   0xffffffff   /* white sclera */
+/* Alert */
+#define COL_X     0xe54040ff   /* red ✕ */
 
-/* Rows 0-8 are the static body.  Rows 9-10 are the legs and have
- * 4 different patterns selected by anim_frame.  '@' = body fill,
- * '#' = eye black, ' ' = transparent. */
-static const char *const crab_body[9] = {
-    "..@@@@@@@@@@@@@@..",   /* 0  top arc */
-    ".@@@@@@@@@@@@@@@@.",   /* 1  */
-    "@@@@@@@@@@@@@@@@@@",   /* 2  widest */
-    "@@@##@@@@@@@@##@@@",   /* 3  eye row 1 */
-    "@@@##@@@@@@@@##@@@",   /* 4  eye row 2 */
-    "@@@@@@@@@@@@@@@@@@",   /* 5  */
-    "@@@@@@@@@@@@@@@@@@",   /* 6  */
-    ".@@@@@@@@@@@@@@@@.",   /* 7  bottom narrows */
-    "..@@@@@@@@@@@@@@..",   /* 8  */
+/* Body sprite — char palette: H = highlight, @ = body, S = shadow,
+ * w = sclera, # = pupil, . = transparent.  Rows 0-9 are body; legs
+ * occupy rows 10-11 with frame-dependent patterns below.  Eye rows
+ * 3-5 get overridden when blinking. */
+static const char *const crab_body_open[10] = {
+    "...HHHHHHHHHHHH...",   /* 0  highlight arc */
+    ".HHHH@@@@@@@@HHHH.",   /* 1  highlight transition */
+    "HHH@@@@@@@@@@@@HHH",   /* 2  transition row */
+    "@@@www@@@@@@www@@@",   /* 3  eye top (sclera) */
+    "@@@w#w@@@@@@w#w@@@",   /* 4  eye middle (pupil) */
+    "@@@www@@@@@@www@@@",   /* 5  eye bottom (sclera) */
+    "@@@@@@@@@@@@@@@@@@",   /* 6  widest body */
+    "SSS@@@@@@@@@@@@SSS",   /* 7  shadow transition */
+    "SSSSSSSSSSSSSSSSSS",   /* 8  shadow band */
+    "...SSSSSSSSSSSS...",   /* 9  bottom arc */
 };
 
-/* 4-frame walk cycle for the bottom 2 rows (legs).  All 4 legs sit at
- * cols 2-3, 7-8, 11-12, 15-16 in the rest pattern.  Frames 1 and 3
- * lift alternate pairs of legs by removing their tip row to simulate
- * the foot leaving the ground. */
+/* Eye area when blinking — replaces rows 3-5.  Eyes squash to a single
+ * 2-px-wide black bar on row 4 (the pupil row), giving a `-` look. */
+static const char *const crab_body_blink[3] = {
+    "@@@@@@@@@@@@@@@@@@",   /* row 3 — sclera covered by body */
+    "@@@@##@@@@@@##@@@@",   /* row 4 — pupil-only blink line */
+    "@@@@@@@@@@@@@@@@@@",   /* row 5 — sclera covered by body */
+};
+
+/* 4-frame leg cycle on rows 10-11.  Four legs at cols 2-3, 6-7, 11-12,
+ * 15-16; rest pose has all 4 touching ground.  Frames 1/3 lift
+ * alternate pairs by removing the lower row only. */
 static const char *const crab_legs[4][2] = {
-    /* frame 0: all 4 down (rest pose) */
-    { "..@@..@@..@@..@@..",
-      "..@@..@@..@@..@@.." },
+    /* frame 0: rest, all 4 down */
+    { "..@@..@@...@@..@@.",
+      "..@@..@@...@@..@@." },
     /* frame 1: legs 1 and 3 lifted */
-    { "..@@..@@..@@..@@..",
-      "......@@......@@.." },
-    /* frame 2: rest again — gives a "step beat" between lift phases */
-    { "..@@..@@..@@..@@..",
-      "..@@..@@..@@..@@.." },
+    { "..@@..@@...@@..@@.",
+      "......@@.......@@." },
+    /* frame 2: rest */
+    { "..@@..@@...@@..@@.",
+      "..@@..@@...@@..@@." },
     /* frame 3: legs 2 and 4 lifted */
-    { "..@@..@@..@@..@@..",
-      "..@@......@@......" },
+    { "..@@..@@...@@..@@.",
+      "..@@.......@@....." },
 };
 
-/* 5×5 red ✕ for the ALERT state.  Drawn floating above the crab's
- * right shoulder, waving ±1 px every ~12 frames. */
+/* 5×5 red ✕ for ALERT.  Drawn above the body, swaying ±1 px. */
 static const char *const alert_x[5] = {
     "@...@",
     ".@.@.",
@@ -134,13 +149,10 @@ void mascot_free(mascot_t *m) { free(m); }
 void mascot_set_alert(mascot_t *m, int alert) {
     if (!m) return;
     if (alert && m->state != STATE_ALERT) {
-        /* Remember the pre-alert state so we can resume cleanly. */
         m->prev_state   = m->state;
         m->state        = STATE_ALERT;
         m->alert_phase  = 0;
     } else if (!alert && m->state == STATE_ALERT) {
-        /* Recover to walking — even if pre-alert was IDLE/FLEE, those
-         * are short-lived and walk is the safe default. */
         enter_walk(m);
     }
 }
@@ -162,8 +174,7 @@ static void clamp_and_bounce(mascot_t *m, int *hit_wall) {
 void mascot_update(mascot_t *m) {
     if (!m) return;
 
-    /* 4-frame walk cycle: advance every 6 frames in WALK/FLEE.  IDLE
-     * and ALERT freeze the leg animation. */
+    /* 4-frame walk cycle: advance every 6 frames in WALK/FLEE. */
     if (m->state == STATE_WALK || m->state == STATE_FLEE) {
         if (++m->anim_timer >= 6) {
             m->anim_timer = 0;
@@ -171,6 +182,12 @@ void mascot_update(mascot_t *m) {
         }
     }
     m->bob_phase   = (m->bob_phase + 1) % 60;
+    /* Blink runs in any non-alert state — even when idle/fleeing the
+     * crab still occasionally blinks.  Period 180 = 3 seconds at 60 fps;
+     * the eye is closed for the first 6 frames of each cycle (~100 ms). */
+    if (m->state != STATE_ALERT) {
+        m->blink_phase = (m->blink_phase + 1) % 180;
+    }
     m->alert_phase = (m->alert_phase + 1) % 24;
 
     int hit_wall = 0;
@@ -194,8 +211,19 @@ void mascot_update(mascot_t *m) {
             break;
 
         case STATE_ALERT:
-            /* Frozen.  Cleared only by mascot_set_alert(m, 0). */
             break;
+    }
+}
+
+/* Map a sprite character to its color, or 0 for transparent. */
+static uint32_t color_for_char(char ch) {
+    switch (ch) {
+        case 'H': return COL_HL;
+        case '@': return COL_BODY;
+        case 'S': return COL_SHD;
+        case 'w': return COL_SCL;
+        case '#': return COL_EYE;
+        default:  return 0;
     }
 }
 
@@ -203,41 +231,53 @@ void mascot_draw(mascot_t *m) {
     if (!m) return;
     int xi = (int)m->fx;
     int yi = m->y_top;
-    /* Idle: small 1-px vertical bob alternating every ~8 frames. */
+
+    /* Idle bob: small 1-px vertical wiggle every ~8 frames. */
     if (m->state == STATE_IDLE && ((m->bob_phase / 8) & 1)) yi -= 1;
+    /* Walk bob: anim_frame 1 and 3 lift the body 1 px (puts a
+     * spring-step rhythm in the silhouette). */
+    int body_dy = 0;
+    if ((m->state == STATE_WALK || m->state == STATE_FLEE) &&
+        (m->anim_frame & 1)) body_dy = -1;
 
-    u32 body_c  = rgba_to_c2d(COL_BODY);
-    u32 eye_c   = rgba_to_c2d(COL_EYE);
+    /* Choose eye art — closed for the first 6 frames of each blink
+     * cycle, otherwise the open 3-row sclera+pupil. */
+    int blinking = (m->state != STATE_ALERT) && (m->blink_phase < 6);
 
-    /* Body (rows 0-8). */
-    for (int row = 0; row < 9; row++) {
-        const char *src = crab_body[row];
+    /* Body rows 0-9.  Rows 3-5 either show open eyes or the blink line
+     * depending on `blinking`. */
+    for (int row = 0; row < 10; row++) {
+        const char *src = crab_body_open[row];
+        if (blinking && row >= 3 && row <= 5)
+            src = crab_body_blink[row - 3];
         for (int col = 0; col < CRAB_W; col++) {
-            char ch = src[col];
-            if (ch == '@')
-                C2D_DrawRectSolid((float)(xi + col), (float)(yi + row),
-                                  0.6f, 1, 1, body_c);
-            else if (ch == '#')
-                C2D_DrawRectSolid((float)(xi + col), (float)(yi + row),
-                                  0.65f, 1, 1, eye_c);
+            uint32_t c = color_for_char(src[col]);
+            if (c) {
+                C2D_DrawRectSolid((float)(xi + col),
+                                  (float)(yi + row + body_dy),
+                                  0.6f, 1, 1, rgba_to_c2d(c));
+            }
         }
     }
 
-    /* Legs (rows 9-10) — frozen at frame 0 in ALERT/IDLE, animated
-     * otherwise. */
+    /* Legs (rows 10-11).  Stay anchored to the ground (no body_dy)
+     * during the walk cycle so the body bobs up and the feet stay
+     * planted — gives the cleanest "stride" look at this resolution. */
     int frame = (m->state == STATE_ALERT || m->state == STATE_IDLE)
               ? 0 : m->anim_frame;
     for (int row = 0; row < 2; row++) {
         const char *src = crab_legs[frame][row];
         for (int col = 0; col < CRAB_W; col++) {
-            if (src[col] == '@')
-                C2D_DrawRectSolid((float)(xi + col), (float)(yi + 9 + row),
-                                  0.6f, 1, 1, body_c);
+            if (src[col] == '@') {
+                C2D_DrawRectSolid((float)(xi + col),
+                                  (float)(yi + 10 + row),
+                                  0.6f, 1, 1, rgba_to_c2d(COL_BODY));
+            }
         }
     }
 
-    /* Red ✕ — drawn above the body when alerting, with a slight
-     * horizontal sway so it reads as "waving for attention". */
+    /* Red ✕ overlay for ALERT — the warning sign the crab waves to
+     * tell the user the network is unresponsive. */
     if (m->state == STATE_ALERT) {
         u32 x_c = rgba_to_c2d(COL_X);
         int sway = ((m->alert_phase / 12) & 1) ? 1 : -1;
@@ -246,9 +286,11 @@ void mascot_draw(mascot_t *m) {
         for (int row = 0; row < 5; row++) {
             const char *src = alert_x[row];
             for (int col = 0; col < 5; col++) {
-                if (src[col] == '@')
-                    C2D_DrawRectSolid((float)(x_x + col), (float)(x_y + row),
+                if (src[col] == '@') {
+                    C2D_DrawRectSolid((float)(x_x + col),
+                                      (float)(x_y + row),
                                       0.7f, 1, 1, x_c);
+                }
             }
         }
     }
@@ -264,7 +306,6 @@ int mascot_hit_test(const mascot_t *m, int tx, int ty) {
 
 void mascot_on_touched(mascot_t *m, int from_tx) {
     if (!m) return;
-    /* Don't let touch interrupt an alert — the user needs to see the X. */
     if (m->state == STATE_ALERT) return;
     int center = (int)m->fx + CRAB_W / 2;
     m->facing = (from_tx < center) ? +1 : -1;

@@ -97,6 +97,13 @@ static void feed_terminal(terminal_t *term, const char *raw, int raw_len) {
     terminal_write_n(term, buf, valid_end);
 }
 
+/* Wall-clock of the last successful ssh_write.  Compared against
+ * last_rx_at by the main loop's interactivity-stall detector — if we
+ * sent input recently but haven't received anything back, the network
+ * is unresponsive even when libssh2 hasn't yet declared the socket
+ * dead.  Updated only by send_to_ssh below. */
+static time_t g_last_tx_at = 0;
+
 /* Snap the local terminal view to the bottom (canceling any user-side
  * scrollback peek) right before sending a key.  This way the user always
  * sees what they just typed, even if they were glancing at history. */
@@ -105,6 +112,7 @@ static void send_to_ssh(ssh_client_t *ssh, terminal_t *term,
     if (!ssh || !ssh_is_connected(ssh) || n <= 0) return;
     if (term && term->sb_offset != 0) terminal_scroll_view(term, -term->sb_offset);
     ssh_write(ssh, bytes, n);
+    g_last_tx_at = time(NULL);
 }
 
 int main(int argc, char *argv[]) {
@@ -141,9 +149,9 @@ int main(int argc, char *argv[]) {
     keyboard_t *kbd  = keyboard_init();
     /* Mascot lives in the bottom row (y=214..239, 26 px tall).  Clock
      * occupies x=2..67 on the left; mascot scampers in x=72..302 on
-     * the right.  Crab is 14 px tall so y_top = 214 + (26-14)/2 = 220
+     * the right.  Crab is 12 px tall so y_top = 214 + (26-12)/2 = 221
      * vertically centers it in the row. */
-    mascot_t   *mc   = mascot_init(72, 302, 220);
+    mascot_t   *mc   = mascot_init(72, 302, 221);
     /* IME loads later (after the M7 banner pumps); softkb tolerates
      * a NULL ime by falling back to passthrough in CN mode. */
     ime_t      *ime  = NULL;
@@ -237,14 +245,25 @@ idle_loop:
         char rbuf[READ_BUFSZ];
         (void)status_buf; (void)status_color;  /* not currently rendered */
 
-        /* Stall detection: track when we last received any SSH bytes
-         * (real data or a keepalive ack).  If nothing comes for
-         * STALL_THRESHOLD seconds, the connection is silently broken
-         * and we flip the mascot into ALERT mode.  Threshold of 25 s
-         * tolerates one missed 10-second keepalive round trip with
-         * margin. */
-        const int STALL_THRESHOLD = 25;
+        /* Two stall detectors run in parallel, OR'd into the alert flag.
+         *
+         *  (a) Interactive-stall (5 s):  after a send, if we don't see
+         *      ANY response (echo, server output, keepalive ack) within
+         *      5 s, the network is broken in the user-noticeable way.
+         *      Triggered by `g_last_tx_at > last_rx_at` (sent more
+         *      recently than last received) plus the 5 s deadline.
+         *
+         *  (b) Idle-stall (25 s):  even when not typing, the keepalive
+         *      should produce traffic every 10 s.  Going 25 s with no
+         *      bytes at all means the link is dead.  Catches the case
+         *      where the user is reading a long paste and never types.
+         *
+         * Either condition flips the mascot into ALERT.  As soon as
+         * a single byte arrives, last_rx_at updates and both clear. */
+        const int STALL_TX_NORX_S = 5;
+        const int STALL_IDLE_S    = 25;
         time_t last_rx_at = time(NULL);
+        g_last_tx_at      = last_rx_at;
         int    stall_alert = 0;
 
         while (aptMainLoop()) {
@@ -273,9 +292,15 @@ idle_loop:
                 }
             }
 
-            /* Stall detection: alert when last_rx_at is too old. */
-            int want_alert = (ssh && ssh_is_connected(ssh) &&
-                              (time(NULL) - last_rx_at) > STALL_THRESHOLD);
+            /* Stall detection: see two-rule comment above. */
+            time_t now_t = time(NULL);
+            int want_alert = ssh && ssh_is_connected(ssh) && (
+                /* Interactive-stall: typed but nothing came back. */
+                (g_last_tx_at > last_rx_at &&
+                 (now_t - g_last_tx_at) > STALL_TX_NORX_S) ||
+                /* Idle-stall: keepalive silence too long. */
+                ((now_t - last_rx_at) > STALL_IDLE_S)
+            );
             if (want_alert != stall_alert) {
                 stall_alert = want_alert;
                 mascot_set_alert(mc, stall_alert);
