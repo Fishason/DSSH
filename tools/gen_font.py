@@ -91,8 +91,31 @@ special_narrow = [
     # Misc Symbols and Pictographs (sub-range)
     *range(0x2B00, 0x2C00),
 ]
+# Yazi-specific icon codepoints (extracted from yazi's default theme).
+# Includes Devicons + Codicons + Material Design icons in both the BMP
+# PUA (0xE000-0xF900) and the Nerd Font v3 supplementary plane
+# (U+F0001-U+F1FFF).  Loaded from data/yazi_icons.txt so the list can
+# be regenerated when yazi releases new themes.
+yazi_icons = []
+yazi_icons_path = os.path.join(os.path.dirname(__file__),
+                               "yazi_icons.txt")
+if os.path.exists(yazi_icons_path):
+    with open(yazi_icons_path) as fyz:
+        for line in fyz:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                yazi_icons.append(int(line, 16))
+            except ValueError:
+                pass
+
 idx = 95
 for cp in special_narrow:
+    if cp not in CHAR_MAP:
+        CHAR_MAP[cp] = idx
+        idx += 1
+for cp in yazi_icons:
     if cp not in CHAR_MAP:
         CHAR_MAP[cp] = idx
         idx += 1
@@ -137,6 +160,14 @@ font_symbols, symbols_path = find_font(CELL_H,
     "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
     "/usr/share/fonts/**/Hack-Regular.ttf",
 )
+# Nerd Font (Symbols Only) — covers Devicons, Codicons, Font Awesome,
+# Octicons, Material Design icons (incl. v3 supplementary plane).  Used
+# as the priority source for any cp the yazi icon set requests, and as
+# a fallback for any cp that Terminus/DejaVu can't render.
+font_nerd, nerd_path = find_font(CELL_H,
+    os.path.join(os.path.dirname(__file__), "..", "data", "fonts",
+                 "SymbolsNerdFontMono-Regular.ttf"),
+)
 # Wide font: Zpix (Chinese 12px pixel font).  Always loaded at its native
 # WIDE_FONT_NATIVE size; render_rows will clip top/bottom into the cell.
 font_wide, wide_path = find_font(WIDE_FONT_NATIVE,
@@ -149,8 +180,9 @@ if font_narrow is None:
     raise SystemExit("FATAL: no narrow font found. apt install fonts-terminus")
 print(f"narrow   : {narrow_path}")
 print(f"symbols  : {symbols_path or '(none)'}")
+print(f"nerd     : {nerd_path or '(none — yazi icons will fall through)'}")
 print(f"wide     : {wide_path or '(none)'}")
-print(f"narrow glyphs target: {NGLYPHS}")
+print(f"narrow glyphs target: {NGLYPHS}  (incl. {len(yazi_icons)} yazi cps)")
 print(f"wide   glyphs target: {NGLYPHS_WIDE}")
 
 
@@ -237,7 +269,9 @@ def render_rows(cp, fnt, w, h):
 # notdef pattern, then treat any glyph that exactly matches as missing.
 notdef_terminus = render_rows_baseline(0xFFFF, font_narrow, CELL_W, CELL_H)
 notdef_dejavu   = render_rows_centered(0xFFFF, font_symbols, CELL_W, CELL_H) if font_symbols else None
+notdef_nerd     = render_rows_centered(0xFFFF, font_nerd,    CELL_W, CELL_H) if font_nerd    else None
 notdef_zpix     = render_rows_centered(0xFFFF, font_wide,    CELL_W, CELL_H) if font_wide    else None
+yazi_icons_set  = set(yazi_icons)
 
 
 def is_empty_or_notdef(rows, font_notdef):
@@ -252,22 +286,40 @@ def is_empty_or_notdef(rows, font_notdef):
 
 
 # ── narrow glyph generation ────────────────────────────────────
-# Fallback chain (each step rejects per-font notdef + empty):
-#   Terminus baseline-anchored  (ASCII / box-draw — Terminus's strong area)
+# Fallback chain depends on whether the cp is a yazi icon or not:
+#
+# yazi cps (Devicons / Codicons / MDI v3 — only Nerd Font has them):
+#   Nerd Font ink-centered  (priority)
+#   -> empty (no fallback worth trying — these glyphs are unique to NF)
+#
+# Other cps (ASCII / Latin / box-draw / arrows / common Powerline):
+#   Terminus baseline-anchored  (ASCII / box-draw, Terminus's strong area)
 #   -> DejaVu ink-centered      (broader symbol coverage)
+#   -> Nerd Font ink-centered   (icons in 0xE000-0xF900 PUA)
 #   -> Zpix ink-centered        (geometric shapes ○●■□▲▼)
-# If all three return notdef, drop from CHAR_MAP so the C-side
+#
+# If everything returns notdef, drop from CHAR_MAP so the C-side
 # fallback_alias() in font_atlas.c can substitute a similar glyph.
 glyph_bitmaps = [[0] * CELL_H for _ in range(NGLYPHS)]
 empty_cps = set()
 for cp, atlas_idx in CHAR_MAP.items():
-    rows = render_rows_baseline(cp, font_narrow, CELL_W, CELL_H)
-    if cp > 0x7E and is_empty_or_notdef(rows, notdef_terminus) and font_symbols is not None:
-        rows = render_rows_centered(cp, font_symbols, CELL_W, CELL_H)
-        if is_empty_or_notdef(rows, notdef_dejavu) and font_wide is not None:
-            rows = render_rows_centered(cp, font_wide, CELL_W, CELL_H)
-            if is_empty_or_notdef(rows, notdef_zpix):
-                rows = [0] * CELL_H  # all three failed -> mark empty
+    if cp in yazi_icons_set:
+        if font_nerd is not None:
+            rows = render_rows_centered(cp, font_nerd, CELL_W, CELL_H)
+            if is_empty_or_notdef(rows, notdef_nerd):
+                rows = [0] * CELL_H
+        else:
+            rows = [0] * CELL_H
+    else:
+        rows = render_rows_baseline(cp, font_narrow, CELL_W, CELL_H)
+        if cp > 0x7E and is_empty_or_notdef(rows, notdef_terminus) and font_symbols is not None:
+            rows = render_rows_centered(cp, font_symbols, CELL_W, CELL_H)
+            if is_empty_or_notdef(rows, notdef_dejavu) and font_nerd is not None:
+                rows = render_rows_centered(cp, font_nerd, CELL_W, CELL_H)
+                if is_empty_or_notdef(rows, notdef_nerd) and font_wide is not None:
+                    rows = render_rows_centered(cp, font_wide, CELL_W, CELL_H)
+                    if is_empty_or_notdef(rows, notdef_zpix):
+                        rows = [0] * CELL_H
     if all(b == 0 for b in rows) and cp > 0x7E:
         empty_cps.add(cp)
     else:

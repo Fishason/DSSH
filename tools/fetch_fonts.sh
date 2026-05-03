@@ -42,5 +42,32 @@ if [ ! -d /usr/share/fonts/truetype/terminus ]; then
     exit 1
 fi
 
+# Symbols Only Nerd Font — devicons / codicons / Material Design /
+# Octicons / Font Awesome glyphs in PUA + supplementary plane.  Yazi,
+# starship, lualine, etc. all use these.  ~2.5 MB (compressed in the
+# upstream tar.xz; the extracted ttf is ~2.5 MB itself).
+NF_VERSION="v3.4.0"
+NF_URL="https://github.com/ryanoasis/nerd-fonts/releases/download/${NF_VERSION}/NerdFontsSymbolsOnly.tar.xz"
+NF_TTF="$FONT_DIR/SymbolsNerdFontMono-Regular.ttf"
+NF_EXPECTED_BYTES=2507556
+
+if [ -f "$NF_TTF" ]; then
+    actual=$(stat -c%s "$NF_TTF")
+    if [ "$actual" = "$NF_EXPECTED_BYTES" ]; then
+        echo "SymbolsNerdFontMono-Regular.ttf already present ($actual bytes)"
+    else
+        echo "Nerd Font size mismatch (got $actual, want $NF_EXPECTED_BYTES) — redownloading"
+        rm -f "$NF_TTF"
+    fi
+fi
+if [ ! -f "$NF_TTF" ]; then
+    echo "Downloading $NF_URL"
+    tmp="$(mktemp -d)"
+    curl -fLsS -o "$tmp/nf.tar.xz" "$NF_URL"
+    tar -xf "$tmp/nf.tar.xz" -C "$tmp" SymbolsNerdFontMono-Regular.ttf
+    mv "$tmp/SymbolsNerdFontMono-Regular.ttf" "$NF_TTF"
+    rm -rf "$tmp"
+fi
+
 echo "Fonts ready:"
 ls -la "$FONT_DIR" /usr/share/fonts/truetype/terminus/ 2>/dev/null
