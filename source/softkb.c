@@ -128,10 +128,12 @@ static const softkey_t keys_letters[] = {
     /* row 2 (zxcv), 9 keys, full-key stagger */
     K(0,2,'z',"z"), K(1,2,'x',"x"), K(2,2,'c',"c"), K(3,2,'v',"v"), K(4,2,'b',"b"),
     K(5,2,'n',"n"), K(6,2,'m',"m"), K(7,2,',',","), K(8,2,'.',"."),
-    /* row 3 (controls): tab (1 col) | [123] (3 cols) | space (6 cols).
-     * Tab is the leading 1-col slot, [123] takes the wider next slot. */
-    KS(0,3,1,"\t","tab", KIND_SEQ),
-    KP(1,3,3,"123"),
+    /* row 3 (controls): [123] (3 cols) | tab (1 col) | space (6 cols).
+     * Page-toggle stays at the leading slot so its position matches
+     * [abc] on the symbols page — finger memory works the same on both
+     * pages, no visual hunting when switching back and forth. */
+    KP(0,3,3,"123"),
+    KS(3,3,1,"\t","tab", KIND_SEQ),
     KW(4,3,6,' ',"space", KIND_SPACE),
 };
 #define N_LETTERS (sizeof(keys_letters) / sizeof(keys_letters[0]))
