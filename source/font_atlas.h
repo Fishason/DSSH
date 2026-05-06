@@ -26,8 +26,19 @@
 extern const int      FONT_NGLYPHS;
 extern const int      FONT_WIDE_NGLYPHS;
 
-/* Narrow glyph bitmaps (uint8_t row, FA_CELL_W bits used). */
-extern const uint8_t  font_glyphs[][FA_CELL_H];
+/* Narrow glyph bitmaps with 3-level grayscale antialiasing.
+ *
+ *   bytes [0          .. FA_CELL_H-1     ]  full-alpha layer (1bpp)
+ *   bytes [FA_CELL_H   .. 2*FA_CELL_H-1  ]  half-alpha layer (1bpp)
+ *   bytes [2*FA_CELL_H .. 3*FA_CELL_H-1  ]  quarter-alpha layer (1bpp)
+ *
+ * Each layer is a 1bpp bitmap (FA_CELL_W bits used per byte).  Pure
+ * bitmap fonts (Terminus, Zpix at native size) render entirely into the
+ * full layer with the half/quarter layers all-zero — zero-cost for those
+ * fonts.  TTF text fonts (Liberation Mono / DejaVu) put edge pixels into
+ * the half/quarter layers, giving smooth anti-aliased rendering at the
+ * 6×12 cell size.  See draw_glyph in renderer.c. */
+extern const uint8_t  font_glyphs[][3 * FA_CELL_H];
 extern const int      FONT_UNICODE_MAP_LEN;
 extern const uint32_t font_unicode_cps[];
 extern const uint16_t font_unicode_idx[];

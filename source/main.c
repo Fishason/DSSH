@@ -177,7 +177,7 @@ int main(int argc, char *argv[]) {
      * keyboard rendered — the badge and mascot work normally. */
     {
         C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
-        C2D_TargetClear(top, C2D_Color32(0x1e, 0x1e, 0x2e, 0xff));
+        C2D_TargetClear(top, C2D_Color32(0x1a, 0x1b, 0x26, 0xff));
         C2D_SceneBegin(top);
         renderer_draw_terminal(r, term);
         C2D_TargetClear(bot, C2D_Color32(0x18, 0x18, 0x25, 0xff));
@@ -211,7 +211,7 @@ int main(int argc, char *argv[]) {
      * the SSH handshake blocks the main loop. */
     {
         C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
-        C2D_TargetClear(top, C2D_Color32(0x1e, 0x1e, 0x2e, 0xff));
+        C2D_TargetClear(top, C2D_Color32(0x1a, 0x1b, 0x26, 0xff));
         C2D_SceneBegin(top);
         renderer_draw_terminal(r, term);
         C2D_TargetClear(bot, C2D_Color32(0x18, 0x18, 0x25, 0xff));
@@ -330,12 +330,12 @@ idle_loop:
                 if (mascot_hit_test(mc, tx, ty))
                     mascot_on_touched(mc, tx);
             } else {
-                const char *kt = softkb_touch(kb, kbd, tx, ty, touch_down);
+                /* Pass the held flag (not just the down-edge) so softkb
+                 * can detect holds for auto-repeat.  softkb derives the
+                 * down-edge internally from prev_pressed.  On no-touch
+                 * frames this also runs the release-fade path. */
+                const char *kt = softkb_touch(kb, kbd, tx, ty, touch_pressed);
                 if (kt) send_to_ssh(ssh, term, kt, (int)strlen(kt));
-            }
-            /* Always advance the softkb release-fade timer on no-touch frames. */
-            if (!touch_pressed) {
-                softkb_touch(kb, kbd, -1, -1, 0);
             }
 
             /* Mascot ticks only when it's actually being shown.  When
@@ -345,7 +345,7 @@ idle_loop:
 
             /* ── Render ── */
             C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
-            C2D_TargetClear(top, C2D_Color32(0x1e, 0x1e, 0x2e, 0xff));
+            C2D_TargetClear(top, C2D_Color32(0x1a, 0x1b, 0x26, 0xff));
             C2D_SceneBegin(top);
             renderer_draw_terminal(r, term);
 

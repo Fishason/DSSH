@@ -4,8 +4,10 @@
 #include <string.h>
 #include <stdio.h>
 
-#define DEFAULT_FG 0xcdd6f4ff
-#define DEFAULT_BG 0x1e1e2eff
+/* Tokyo Night Storm — LazyVim's default colourscheme.  Slightly deeper
+ * blues than Catppuccin Mocha and visually denser on the 3DS LCD. */
+#define DEFAULT_FG 0xc0caf5ff
+#define DEFAULT_BG 0x1a1b26ff
 
 #define STATE_NORMAL 0
 #define STATE_ESC    1
@@ -106,10 +108,14 @@ static void put_char(terminal_t *t, uint32_t cp) {
 /* ── 256色変換 ── */
 static uint32_t ansi_256_to_rgba(int idx) {
     static const uint32_t ansi16[16] = {
-        0x1e1e2eff, 0xf38ba8ff, 0xa6e3a1ff, 0xf9e2afff,
-        0x89b4faff, 0xcba6f7ff, 0x89dcebff, 0xcdd6f4ff,
-        0x585b70ff, 0xf38ba8ff, 0xa6e3a1ff, 0xf9e2afff,
-        0x89b4faff, 0xcba6f7ff, 0x89dcebff, 0xcdd6f4ff,
+        /* Tokyo Night Storm — base palette + brighter variants for
+         * SGR 90-97 / 100-107.  Bright row is genuinely lifted (not
+         * a duplicate of the base row) so terminals that distinguish
+         * bold-vs-bright look correct. */
+        0x15161eff, 0xf7768eff, 0x9ece6aff, 0xe0af68ff,
+        0x7aa2f7ff, 0xbb9af7ff, 0x7dcfc0ff, 0xa9b1d6ff,
+        0x414868ff, 0xff7a93ff, 0xb9f27cff, 0xff9e64ff,
+        0x7da6ffff, 0xbb9af7ff, 0x0db9d7ff, 0xc0caf5ff,
     };
     if (idx < 16) return ansi16[idx];
     if (idx >= 232) { uint8_t v = 8 + (idx-232)*10; return (v<<24)|(v<<16)|(v<<8)|0xff; }

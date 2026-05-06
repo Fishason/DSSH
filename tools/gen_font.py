@@ -120,6 +120,39 @@ for cp in yazi_icons:
         CHAR_MAP[cp] = idx
         idx += 1
 
+# Enumerate Symbols-Only Nerd Font's full cmap so every codepoint the
+# font actually supports gets registered — covers Devicons, Codicons,
+# MDI, Font Awesome, Octicons, Powerline, in both BMP PUA (0xE000-0xF900)
+# and the v3 supplementary plane (0xF0001-0xF1FFF).  This gives LazyVim,
+# nvim-web-devicons, Lazy.nvim, tmux themes, etc. a complete icon set
+# without manual range curation.  Adds ~9-10k cps and ~120 KB to
+# font_data.c; the cost is acceptable.  yazi_icons.txt is preserved as
+# an explicit "must have" subset assertion.
+nerd_cps_added = 0
+try:
+    from fontTools.ttLib import TTFont
+    nf_path_candidate = os.path.join(os.path.dirname(__file__), "..",
+                                     "data", "fonts",
+                                     "SymbolsNerdFontMono-Regular.ttf")
+    if os.path.exists(nf_path_candidate):
+        nf_tt = TTFont(nf_path_candidate)
+        nf_cmap = nf_tt.getBestCmap()
+        nerd_pua_cps = sorted(cp for cp in nf_cmap if cp >= 0xE000)
+        for cp in nerd_pua_cps:
+            if cp not in CHAR_MAP:
+                CHAR_MAP[cp] = idx
+                idx += 1
+                nerd_cps_added += 1
+        print(f"  + {nerd_cps_added:,} new cps from Nerd Font cmap "
+              f"({len(nerd_pua_cps):,} total in font; rest already covered "
+              f"by special_narrow + yazi_icons)")
+    else:
+        print("  WARN: Symbols Nerd Font not found at "
+              f"{nf_path_candidate}; LazyVim icons may show as ?")
+except ImportError:
+    print("  WARN: fontTools not installed — skipping Nerd Font cmap "
+          "enumeration.  Run: pip3 install --user fonttools")
+
 
 # ── wide glyph map (M3 includes full CJK via Zpix bitmap font) ────
 # Range covers everything Zpix supports at 12px and what tmux + claude-code
@@ -151,11 +184,25 @@ def find_font(size, *patterns):
                 continue
     return None, None
 
+# Bitmap font for narrow text — used as the FALLBACK chain entry for
+# everything that's not ASCII (box-drawing, Powerline, Cyrillic, etc.).
+# Stays Terminus because that font has the best coverage of the dense
+# Unicode ranges we need, and at 12pt its bitmap is pixel-perfect.
 font_narrow, narrow_path = find_font(CELL_H,
     "/usr/share/fonts/truetype/terminus/TerminusTTF-*.ttf",
     "/usr/share/fonts/**/Terminus*.ttf",
     "/usr/share/fonts/**/DejaVuSansMono.ttf",
 )
+# ASCII anti-aliased path is currently disabled — all available TTF
+# monospace fonts (Liberation Mono / DejaVu Mono / FreeMono / Noto Mono /
+# Hack) have an advance width of 7–8 px at 12pt, so they don't fit our
+# 6 px cell without clipping the right edge.  Terminus is the only
+# 12pt monospace whose design size is exactly 6×12, so ASCII falls back
+# to the bitmap chain through font_narrow.  The 3-layer AA atlas storage
+# is preserved (zero cost for bitmap-only glyphs) so swapping in a
+# future narrow-design TTF (e.g. Iosevka Term) doesn't require revisiting
+# the C-side renderer. */
+font_ascii, ascii_path = None, None
 font_symbols, symbols_path = find_font(CELL_H,
     "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
     "/usr/share/fonts/**/Hack-Regular.ttf",
@@ -179,6 +226,7 @@ font_wide, wide_path = find_font(WIDE_FONT_NATIVE,
 if font_narrow is None:
     raise SystemExit("FATAL: no narrow font found. apt install fonts-terminus")
 print(f"narrow   : {narrow_path}")
+print(f"ascii AA : {ascii_path or '(none — ASCII falls back to bitmap chain)'}")
 print(f"symbols  : {symbols_path or '(none)'}")
 print(f"nerd     : {nerd_path or '(none — yazi icons will fall through)'}")
 print(f"wide     : {wide_path or '(none)'}")
@@ -212,8 +260,42 @@ def render_rows_pixels_to_bits(img, w, h):
     return rows
 
 
+def render_rows_pixels_to_layers(img, w, h):
+    """Three-level AA quantisation.  Pillow renders TTF fonts into an
+    8-bit grayscale canvas; we bin each pixel into {full, half, quarter,
+    drop} based on its gray value.  Returns a flat 3*h-byte list:
+        [h bytes full layer | h bytes half | h bytes quarter]
+    The 3-layer format is what `font_glyphs[][3*FA_CELL_H]` consumes
+    on the C side; renderer.c's draw_glyph paints each layer with full,
+    half, and quarter alpha respectively for smooth edges."""
+    px = list(img.getdata())
+    full = [0] * h
+    half = [0] * h
+    quarter = [0] * h
+    for r in range(h):
+        for c in range(w):
+            v = px[r * w + c]
+            bit = 1 << (w - 1 - c)
+            if v >= 192:
+                full[r] |= bit
+            elif v >= 96:
+                half[r] |= bit
+            elif v >= 32:
+                quarter[r] |= bit
+    return full + half + quarter
+
+
+def to_3layer_from_1bpp(rows_1bpp):
+    """Wrap a 1bpp h-byte render into the 3-layer format by placing all
+    set bits in the full layer and zero-filling half/quarter.  Used for
+    bitmap-clean fonts (Terminus, Zpix at native size, box-drawing
+    glyphs) where AA would smear the design intent."""
+    h = len(rows_1bpp)
+    return list(rows_1bpp) + [0] * (h * 2)
+
+
 def render_rows_baseline(cp, fnt, w, h):
-    """Baseline-anchored render. Best for ASCII/monospace continuous text.
+    """Baseline-anchored 1bpp render. Best for ASCII/monospace continuous text.
 
     Pillow's draw.text((x,y)) places the text top at y and the baseline at
     y + ascent.  To put the baseline at cell row (h - descent) (leaving
@@ -233,6 +315,23 @@ def render_rows_baseline(cp, fnt, w, h):
     except Exception:
         pass
     return render_rows_pixels_to_bits(img, w, h)
+
+
+def render_rows_baseline_aa(cp, fnt, w, h):
+    """Baseline-anchored 3-layer AA render — same anchoring as
+    render_rows_baseline, but quantises to 3 alpha levels instead of
+    1bpp.  Used for ASCII through Liberation Mono / DejaVu Mono so
+    Pillow's natural FreeType anti-aliasing flows through to the GPU."""
+    img = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(img)
+    try:
+        ascent, descent = fnt.getmetrics()
+        descent_room = max(1, descent) if descent > 0 else 0
+        oy = h - descent_room - ascent
+        draw.text((0, oy), chr(cp), font=fnt, fill=255)
+    except Exception:
+        pass
+    return render_rows_pixels_to_layers(img, w, h)
 
 
 def render_rows_centered(cp, fnt, w, h):
@@ -345,15 +444,23 @@ text_first = [
     (font_wide,    render_rows_centered, notdef_zpix),
 ]
 
-glyph_bitmaps = [[0] * CELL_H for _ in range(NGLYPHS)]
+glyph_bitmaps = [[0] * (3 * CELL_H) for _ in range(NGLYPHS)]
 empty_cps = set()
 for cp, atlas_idx in CHAR_MAP.items():
-    chain = icon_first if cp in yazi_icons_set else text_first
-    # ASCII (cp <= 0x7E) sticks to baseline through Terminus regardless.
-    if cp <= 0x7E:
-        rows = render_rows_baseline(cp, font_narrow, CELL_W, CELL_H)
+    # Any PUA cp (including the NF-cmap-derived ones added above) prefers
+    # the icon-first chain so Devicons/MDI/Codicons render from Nerd Font
+    # rather than getting picked up as a notdef from Terminus first.
+    chain = icon_first if (cp in yazi_icons_set or cp >= 0xE000) else text_first
+    # ASCII (cp <= 0x7E) renders through the AA TTF font (Liberation /
+    # DejaVu Mono) so smooth edges land in the half/quarter alpha layers.
+    # Everything else stays on the bitmap chain (Terminus → DejaVu → NF →
+    # Zpix), which returns a 1bpp render that we wrap into the 3-layer
+    # storage format with empty half/quarter layers.
+    if cp <= 0x7E and font_ascii is not None:
+        rows = render_rows_baseline_aa(cp, font_ascii, CELL_W, CELL_H)
     else:
-        rows = render_with_chain(cp, chain)
+        rows_1bpp = render_with_chain(cp, chain)
+        rows = to_3layer_from_1bpp(rows_1bpp)
     if all(b == 0 for b in rows) and cp > 0x7E:
         empty_cps.add(cp)
     else:
@@ -390,8 +497,12 @@ with open(out_path, "w") as f:
     # FA_CELL_W / FA_CELL_H are now #defines in font_atlas.h, do NOT emit
     # them as runtime constants here (would conflict with the macros).
 
-    # narrow glyphs
-    f.write(f"const uint8_t font_glyphs[{NGLYPHS}][{CELL_H}] = {{\n")
+    # narrow glyphs — 3-layer AA: full / half / quarter alpha layers
+    # concatenated.  Layout:
+    #   bytes [0..CELL_H-1]            full-alpha bits
+    #   bytes [CELL_H..2*CELL_H-1]     half-alpha bits
+    #   bytes [2*CELL_H..3*CELL_H-1]   quarter-alpha bits
+    f.write(f"const uint8_t font_glyphs[{NGLYPHS}][{3 * CELL_H}] = {{\n")
     for gi in range(NGLYPHS):
         rs = ", ".join(f"0x{b:02x}" for b in glyph_bitmaps[gi])
         f.write(f"    {{ {rs} }},\n")

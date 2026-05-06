@@ -128,9 +128,10 @@ static const softkey_t keys_letters[] = {
     /* row 2 (zxcv), 9 keys, full-key stagger */
     K(0,2,'z',"z"), K(1,2,'x',"x"), K(2,2,'c',"c"), K(3,2,'v',"v"), K(4,2,'b',"b"),
     K(5,2,'n',"n"), K(6,2,'m',"m"), K(7,2,',',","), K(8,2,'.',"."),
-    /* row 3 (controls): [123] | tab | space (6 cols) */
-    KP(0,3,3,"123"),
-    KS(3,3,1,"\t","tab", KIND_SEQ),
+    /* row 3 (controls): tab (1 col) | [123] (3 cols) | space (6 cols).
+     * Tab is the leading 1-col slot, [123] takes the wider next slot. */
+    KS(0,3,1,"\t","tab", KIND_SEQ),
+    KP(1,3,3,"123"),
     KW(4,3,6,' ',"space", KIND_SPACE),
 };
 #define N_LETTERS (sizeof(keys_letters) / sizeof(keys_letters[0]))
@@ -173,6 +174,22 @@ struct softkb_t {
     char          out_buf[16];
     int           out_len;
 
+    /* Hold-to-repeat state — independent from the visual press animation
+     * because that one fades after 14 frames while a true hold may last
+     * arbitrarily long.
+     *   prev_pressed         touch state on the previous frame (for
+     *                        down-edge detection inside softkb_touch)
+     *   repeat_idx           key currently being held; -1 = none.  Set to
+     *                        -2 ("swallow until release") right after a
+     *                        page toggle so the new layout's key under
+     *                        the finger doesn't get fired.
+     *   repeat_held_frames   frames since first contact with repeat_idx;
+     *                        compared against DPAD-style ramp constants.
+     */
+    int           prev_pressed;
+    int           repeat_idx;
+    int           repeat_held_frames;
+
     /* Debug page state */
     int           debug_mode;            /* 0 = keyboard, 1 = debug overlay */
     int           badge_last_tap_frame;  /* kbd->frame at last badge tap */
@@ -199,6 +216,7 @@ softkb_t *softkb_init(ime_t *ime) {
     if (!kb) return NULL;
     kb->page = PAGE_LETTERS;
     kb->pressed_idx = -1;
+    kb->repeat_idx = -1;
     kb->mascot_enabled = 1;
     /* Far-past sentinel so the very first badge tap can never look
      * like the second half of a double-tap. */
@@ -283,74 +301,130 @@ static int hit_test(const softkb_t *kb, int tx, int ty) {
     return -1;
 }
 
+/* Hold-to-repeat ramp — mirrors keyboard.c's D-pad/Backspace cadence so
+ * a held soft key feels identical to a held physical key.  Not exposed
+ * from keyboard.c because that would couple the two modules; the
+ * constants are short and stable enough to duplicate. */
+#define SOFTKB_INITIAL_DELAY 15  /* frames before first auto-repeat (~250 ms) */
+
+static int softkb_repeat_period(int phase) {
+    if (phase <  30) return 5;   /* 0.0-0.5 s post-delay: 12 fires/sec */
+    if (phase <  90) return 2;   /* 0.5-1.5 s:            30 fires/sec */
+    return 1;                    /* >1.5 s:               60 fires/sec */
+}
+
 const char *softkb_touch(softkb_t *kb,
                          keyboard_t *kbd,
                          int tx, int ty,
                          int pressed) {
     if (!kb || !kbd) return NULL;
 
+    /* Down-edge derived from per-frame state — required because main.c
+     * now passes the held flag (not the down-edge flag) so we can track
+     * holds for auto-repeat. */
+    int down_edge = pressed && !kb->prev_pressed;
+    kb->prev_pressed = pressed;
+
     if (!pressed) {
+        /* Release: clear repeat tracking and let the visual press-down
+         * animation fade out naturally. */
+        kb->repeat_idx = -1;
+        kb->repeat_held_frames = 0;
         if (kb->pressed_idx >= 0) {
             kb->pressed_frames++;
-            /* Keep the key visually engaged through the full press-down
-             * animation (see PRESS_ANIM_FRAMES below). */
             if (kb->pressed_frames > 14) kb->pressed_idx = -1;
         }
         return NULL;
     }
     if (tx < 0 || ty < 0) return NULL;
 
+    /* All non-key widgets (badge, debug toggle, IME candidate strip)
+     * fire only on the down-edge.  Subsequent held frames in those
+     * regions are swallowed via repeat_idx = -2 so a swipe from there
+     * to a real key during the same gesture also does nothing. */
+
     /* ── Mode badge: double-tap to enter debug, single-tap to leave ── */
     if (badge_hit(tx, ty)) {
-        int now  = kbd->frame;
-        int diff = now - kb->badge_last_tap_frame;
-        if (kb->debug_mode) {
-            /* In debug mode, any single tap on the badge exits. */
-            kb->debug_mode = 0;
-        } else if (diff > 0 && diff < BADGE_DOUBLE_TAP_FRAMES) {
-            /* Two badge taps within ~500 ms → enter debug mode. */
-            kb->debug_mode = 1;
+        if (down_edge) {
+            int now  = kbd->frame;
+            int diff = now - kb->badge_last_tap_frame;
+            if (kb->debug_mode) {
+                kb->debug_mode = 0;
+            } else if (diff > 0 && diff < BADGE_DOUBLE_TAP_FRAMES) {
+                kb->debug_mode = 1;
+            }
+            kb->badge_last_tap_frame = now;
         }
-        kb->badge_last_tap_frame = now;
+        kb->repeat_idx = -2;
         return NULL;
     }
 
     /* ── Debug-mode taps go to the debug-page widgets, not to keys. ── */
     if (kb->debug_mode) {
-        if (dbg_toggle_hit(tx, ty)) {
+        if (down_edge && dbg_toggle_hit(tx, ty)) {
             kb->mascot_enabled = !kb->mascot_enabled;
         }
+        kb->repeat_idx = -2;
         return NULL;
     }
 
     /* ── IME candidate strip: tap on a visible candidate commits it. ── */
     if (kb->ime && ime_active(kb->ime) && ty < STATUS_H) {
-        for (int i = 0; i < kb->cand_box_n; i++) {
-            if (tx >= kb->cand_box_x[i] &&
-                tx <  kb->cand_box_x[i] + kb->cand_box_w[i]) {
-                /* ime_select clears the buffer; the returned pointer
-                 * stays alive for the dict's lifetime so we can pass
-                 * it through to the SSH writer without copying. */
-                return ime_select(kb->ime, i);
+        if (down_edge) {
+            for (int i = 0; i < kb->cand_box_n; i++) {
+                if (tx >= kb->cand_box_x[i] &&
+                    tx <  kb->cand_box_x[i] + kb->cand_box_w[i]) {
+                    kb->repeat_idx = -2;
+                    return ime_select(kb->ime, i);
+                }
             }
         }
-        /* Tap landed in the strip but not on a candidate — swallow it
-         * so it doesn't activate a key behind. */
+        kb->repeat_idx = -2;
         return NULL;
     }
 
     /* ── Normal keyboard mode: hit-test keys, dispatch a byte. ── */
     int idx = hit_test(kb, tx, ty);
     if (idx < 0) {
-        kb->pressed_idx = -1;
+        if (down_edge) kb->pressed_idx = -1;
+        kb->repeat_idx = -1;
+        kb->repeat_held_frames = 0;
         return NULL;
     }
-    kb->pressed_idx    = idx;
-    kb->pressed_frames = 0;
 
     int n;
     const softkey_t *layout = current_layout(kb, &n);
     const softkey_t *k = &layout[idx];
+
+    /* Decide whether *this* frame fires an emission.  Three cases:
+     *   a) repeat_idx == -2  → swallow-until-release sentinel from a
+     *      non-key widget tap or a recent page toggle.  No fire.
+     *   b) idx != repeat_idx → fresh contact OR finger swiped to a new
+     *      key.  Fire once, reset hold counter.
+     *   c) idx == repeat_idx → held on the same key.  Fire only once
+     *      the initial delay has elapsed and we're on a period boundary.
+     */
+    int fire = 0;
+    if (kb->repeat_idx == -2) {
+        return NULL;
+    } else if (idx != kb->repeat_idx) {
+        kb->repeat_idx         = idx;
+        kb->repeat_held_frames = 0;
+        kb->pressed_idx        = idx;
+        kb->pressed_frames     = 0;
+        fire = 1;
+    } else {
+        kb->repeat_held_frames++;
+        if (k->kind == KIND_PAGE_BTN || k->kind == KIND_PAGE_TOGGLE) {
+            /* Page toggles never auto-repeat — would whip the page back
+             * and forth every few frames. */
+        } else if (kb->repeat_held_frames >= SOFTKB_INITIAL_DELAY) {
+            int phase  = kb->repeat_held_frames - SOFTKB_INITIAL_DELAY;
+            int period = softkb_repeat_period(phase);
+            if (phase % period == 0) fire = 1;
+        }
+    }
+    if (!fire) return NULL;
 
     /* True iff we should route this tap through the IME instead of
      * sending it raw.  CN mode + a-z key + no held modifier → IME.
@@ -367,6 +441,9 @@ const char *softkb_touch(softkb_t *kb,
         case KIND_PAGE_TOGGLE:
         case KIND_PAGE_BTN:
             kb->page = (kb->page == PAGE_LETTERS) ? PAGE_SYMBOLS : PAGE_LETTERS;
+            /* After the page flips, whatever key now sits under the
+             * finger must NOT auto-fire on the next held frame. */
+            kb->repeat_idx = -2;
             return NULL;
         case KIND_SEQ:
             return k->seq;

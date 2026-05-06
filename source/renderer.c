@@ -18,6 +18,10 @@
  * glyph at 60fps. Plenty of headroom.
  */
 
+/* Raw passthrough — neovim sends exact 24-bit RGB via SGR-truecolor;
+ * trust those colours and let the LCD render them as-is.  An earlier
+ * "punch" gain was found to wash dark blues into greys and lift bright
+ * blues toward white, defeating the user's colourscheme. */
 static u32 rgba_to_c2d(uint32_t rgba) {
     return C2D_Color32((rgba >> 24) & 0xff,
                        (rgba >> 16) & 0xff,
@@ -25,10 +29,12 @@ static u32 rgba_to_c2d(uint32_t rgba) {
                         rgba        & 0xff);
 }
 
-static void draw_glyph(float fx, float fy, float z,
-                       int glyph_idx, u32 color) {
-    if (glyph_idx < 0 || glyph_idx >= FONT_NGLYPHS) return;
-    const uint8_t *rows = font_glyphs[glyph_idx];
+/* Walk a 1bpp layer (FA_CELL_H bytes) and paint contiguous lit runs as
+ * solid 1×1-row rects in the given C2D-format colour.  Factored out so
+ * draw_glyph and draw_glyph_scaled can share the inner loop and the AA
+ * variant can call it three times with different alpha. */
+static inline void draw_layer_runs(float fx, float fy, float z,
+                                   const uint8_t *rows, u32 color) {
     for (int row = 0; row < FA_CELL_H; row++) {
         uint8_t bits = rows[row];
         if (!bits) continue;
@@ -42,6 +48,36 @@ static void draw_glyph(float fx, float fy, float z,
             } else col++;
         }
     }
+}
+
+/* Three-pass anti-aliased glyph rendering.  Layer 0 is full-alpha
+ * (matches the `color` argument); layer 1 is half alpha; layer 2 is
+ * quarter alpha.  For pure bitmap fonts (Terminus, Zpix) only layer 0
+ * has set bits, so this is identical-cost to the old 1bpp path.  For
+ * TTF text fonts the edge pixels populate layers 1 and 2, smoothing
+ * stroke edges via citro2d's natural alpha blending against whatever
+ * background colour is below. */
+static void draw_glyph(float fx, float fy, float z,
+                       int glyph_idx, u32 color) {
+    if (glyph_idx < 0 || glyph_idx >= FONT_NGLYPHS) return;
+    const uint8_t *base = font_glyphs[glyph_idx];
+
+    draw_layer_runs(fx, fy, z, base, color);
+
+    /* Decompose the C2D colour back to channels so we can scale the
+     * alpha for the half/quarter layers.  C2D_Color32 packs as
+     * (a<<24)|(b<<16)|(g<<8)|r — the byte order is fixed by the macro
+     * and matches the GPU's expected format. */
+    u8 a = (color >> 24) & 0xff;
+    if (a < 2) return;  /* fully transparent already; AA layers add nothing */
+    u8 b = (color >> 16) & 0xff;
+    u8 g = (color >>  8) & 0xff;
+    u8 r =  color        & 0xff;
+
+    u32 c_half    = C2D_Color32(r, g, b, a / 2);
+    u32 c_quarter = C2D_Color32(r, g, b, a / 4);
+    draw_layer_runs(fx, fy, z, base + FA_CELL_H,         c_half);
+    draw_layer_runs(fx, fy, z, base + (FA_CELL_H * 2),   c_quarter);
 }
 
 static void draw_wide_glyph(float fx, float fy, float z,
@@ -106,7 +142,10 @@ void renderer_draw_terminal(renderer_t *r, terminal_t *term) {
                 draw_bg = 1;
             } else {
                 bg_rgba = c.bg;
-                draw_bg = (c.bg != 0x1e1e2eff);
+                /* Skip drawing the default bg cell — the canvas clear
+                 * paints that colour for "free".  Hex literal must
+                 * track DEFAULT_BG in terminal.c. */
+                draw_bg = (c.bg != 0x1a1b26ff);
             }
             if (draw_bg)
                 C2D_DrawRectSolid(fx, fy, 0.1f, cw, ch, rgba_to_c2d(bg_rgba));
@@ -212,13 +251,9 @@ void renderer_draw_text_px(int px, int py, const char *text, uint32_t rgba) {
     }
 }
 
-/* Scaled glyph blit: same bit-walking as draw_glyph but each lit run
- * becomes a (run × scale) × scale rect.  Drawn at z=0.85 so the popup
- * bubble's label sits above the key but below any later overlay. */
-static void draw_glyph_scaled(float fx, float fy, float z,
-                              int glyph_idx, u32 color, int scale) {
-    if (glyph_idx < 0 || glyph_idx >= FONT_NGLYPHS) return;
-    const uint8_t *rows = font_glyphs[glyph_idx];
+static inline void draw_layer_runs_scaled(float fx, float fy, float z,
+                                          const uint8_t *rows, u32 color,
+                                          int scale) {
     for (int row = 0; row < FA_CELL_H; row++) {
         uint8_t bits = rows[row];
         if (!bits) continue;
@@ -233,6 +268,26 @@ static void draw_glyph_scaled(float fx, float fy, float z,
             } else col++;
         }
     }
+}
+
+/* Scaled glyph blit: same 3-layer AA as draw_glyph but each lit run
+ * becomes a (run × scale) × scale rect.  Drawn at z=0.85 so the popup
+ * bubble's label sits above the key but below any later overlay. */
+static void draw_glyph_scaled(float fx, float fy, float z,
+                              int glyph_idx, u32 color, int scale) {
+    if (glyph_idx < 0 || glyph_idx >= FONT_NGLYPHS) return;
+    const uint8_t *base = font_glyphs[glyph_idx];
+    draw_layer_runs_scaled(fx, fy, z, base, color, scale);
+
+    u8 a = (color >> 24) & 0xff;
+    if (a < 2) return;
+    u8 b = (color >> 16) & 0xff;
+    u8 g = (color >>  8) & 0xff;
+    u8 r =  color        & 0xff;
+    u32 c_half    = C2D_Color32(r, g, b, a / 2);
+    u32 c_quarter = C2D_Color32(r, g, b, a / 4);
+    draw_layer_runs_scaled(fx, fy, z, base + FA_CELL_H,       c_half,    scale);
+    draw_layer_runs_scaled(fx, fy, z, base + FA_CELL_H * 2,   c_quarter, scale);
 }
 
 int renderer_utf8_text_width_px(const char *text) {
