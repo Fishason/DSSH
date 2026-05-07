@@ -39,6 +39,9 @@ IMG_*.jpg
 IMG_*.JPG
 IMG_*.png
 IMG_*.PNG
+截屏*.png
+截屏*.PNG
+docs/media/_ref*
 
 # Full-resolution demo video — uploaded as a Release asset, not in git
 docs/media/demo.mp4
@@ -53,6 +56,14 @@ sd_template/3ds/3dssh/config.ini
 *.key
 id_rsa*
 !sd_template/3ds/3dssh/id_rsa.example
+
+# OpenRouter / dssh-whisper credentials — never check into git.  install
+# scripts write them to ~/.config/dssh-whisper/ but a stray `git add .`
+# from a HOME-ish working tree could otherwise sweep them up.
+*api-key*
+*api_key*
+*openrouter*
+.config/dssh-whisper/
 
 # Editor / OS
 .vscode/

@@ -9,9 +9,11 @@
 </p>
 
 <p align="center">
-  <b>Nintendo 3DS SSH client with on-screen pinyin IME</b><br>
+  <b>Nintendo 3DS SSH client — pinyin IME · voice input · ANSI terminal</b><br>
   Top screen runs a citro2d ANSI terminal · bottom screen draws its own
   soft keyboard · RSA public-key auth over libssh2 + mbedTLS<br>
+  Press <b>START</b> to dictate Chinese into Claude Code; type pinyin on
+  the soft keyboard for the rest.<br>
   Run <code>tmux</code> + <code>claude-code</code> from a 3DS — code from
   the couch without ever opening the laptop.
 </p>
@@ -54,6 +56,12 @@
 - **Pinyin input method** — top 300k entries from rime-ice, plus
   abbreviation matching (`nh` → 你好), prefix fallback (`nihaoz`
   auto-falls-back to `nihao`), and a candidate cursor.
+- **Voice input (NEW in v1.0)** — press **START**, speak a Chinese
+  sentence, press **START** again; ~1-2 s later the transcribed text
+  drops straight into the SSH terminal.  Default backend is OpenRouter
+  Whisper Large V3 Turbo over the cloud (`$0.04` per audio-hour); a
+  self-hosted whisper.cpp track is available if you'd rather not depend
+  on an external API.
 - **RSA-4096 public-key auth** — libssh2 + mbedTLS, private key read
   from the SD card.
 - **Full physical-key mapping** — D-pad arrow keys, hold-style modifiers
@@ -70,6 +78,7 @@
 - [Configure config.ini](#configure-configini)
 - [Key bindings](#key-bindings)
 - [Using the IME](#using-the-ime)
+- [Voice input](#voice-input)
 - [Debug page](#debug-page)
 - [Build from source](#build-from-source)
 - [Project layout](#project-layout)
@@ -181,7 +190,7 @@ sdmc:/3ds/3dssh/
 | **L** | Shift modifier / **+ Circle Pad → right pane** | See [tmux split scrolling](#tmux-split-scrolling) below |
 | **R** | Toggle CN/EN input mode | Top-right ENG/CHN reflects the current mode |
 | **SELECT** | Esc | Tap fires immediately |
-| **START** | Quit DSSH | |
+| **START** | **Voice input toggle** | Press once to start recording; press again to stop and transcribe.  See [Voice input](#voice-input). |
 | **Space** (soft keyboard) | Plain space (EN) / **commit highlighted candidate** (IME) | Matches sogou / fcitx convention |
 | **Shift + .** | **。** (full-width Chinese period, U+3002) | Works in both EN and CN modes |
 | **D-pad ↑↓** | Arrow keys / IME page nav | When the IME buffer is active, ↑↓ paginates candidates |
@@ -294,6 +303,114 @@ backspacing, no mode-toggle, no retyping.
 
 > Difference: **Space** commits the highlighted candidate (Chinese
 > chars on screen).  **A** sends the typed letters as-is.
+
+---
+
+## Voice input
+
+Press **START** on the 3DS, speak a Chinese sentence, press **START**
+again — the transcribed UTF-8 text appears in the SSH terminal as if
+you had typed it.  Round-trip is ~1-2 seconds with the default cloud
+backend; full sentences flow into Claude Code without ever opening the
+soft keyboard.
+
+The 3DS records 16 kHz PCM mono via its built-in microphone, ships up
+to 8 seconds of audio over a **second libssh2 channel** on the same
+SSH session (no new ports, no new auth, no firewall changes), and a
+small server-side shim transcribes via Whisper.
+
+**Status indicator** (top-left of the soft keyboard top row):
+- 🔴 **REC** (red, pulsing) — recording in progress
+- ⠋⠙⠹⠸ (cyan, spinning) — uploading + transcribing
+- **ERR** (red, 2 s) — request failed; press START again to retry
+
+### Two server-side install paths
+
+DSSH ships two installers — both expose the same `dssh-whisper` CLI
+and the 3DS works identically; the difference is *who runs the model*.
+
+| | **API track** (recommended) | **Dual track** |
+|---|---|---|
+| Inference | OpenRouter Whisper Large V3 Turbo (cloud) | OpenRouter (default) **+** local whisper.cpp `small` (fallback) |
+| Server install size | ~30 KB | ~600 MB (model + venv) |
+| Latency (4 s clip) | ~1-2 s | API: ~1-2 s · local: 2-30 s (CPU-bound) |
+| Cost | $0.04 / audio-hour (≈ $0.0007 / minute) | Same when on API · free when on local |
+| Privacy | Audio leaves your server | Local track keeps audio on-prem |
+| Internet required | Yes (HTTPS to openrouter.ai) | Yes for API · No for local |
+| Server CPU load | Negligible | Local track loads ~1 GB into RAM |
+
+#### Install — API track (recommended)
+
+Get an OpenRouter API key from
+[openrouter.ai/settings/keys](https://openrouter.ai/settings/keys)
+(typical cost: $0.04 per audio-hour ≈ a few cents per month for
+ordinary use).  Then on your server:
+
+```bash
+git clone https://github.com/Fishason/DSSH.git ~/dssh-repo
+bash ~/dssh-repo/tools/install_whisper_api.sh
+# ↑ pastes your OpenRouter API key when prompted, or set it via:
+#    OPENROUTER_API_KEY="sk-or-v1-..." bash ~/dssh-repo/tools/install_whisper_api.sh
+```
+
+Footprint: a 5 KB Python shim + a 3 KB bash CLI wrapper.  No daemon,
+no model, nothing to monitor.  Config files:
+
+```
+~/.config/dssh-whisper/
+├── track       # "api" or "local"
+└── api-key     # chmod 0600
+~/.local/bin/
+├── dssh-whisper          # CLI wrapper
+└── dssh-whisper-shim     # symlink the 3DS exec's via SSH
+```
+
+#### Install — Dual track
+
+Same prerequisites plus `python3-venv` and ~600 MB free disk.
+Downloads the `whisper-small` multilingual model and runs a
+systemd-managed local daemon, while still defaulting to the API track:
+
+```bash
+git clone https://github.com/Fishason/DSSH.git ~/dssh-repo
+bash ~/dssh-repo/tools/install_whisper_dual.sh
+```
+
+After install, switch tracks at any time without restarting anything:
+
+```bash
+dssh-whisper switch local   # next START press → self-hosted
+dssh-whisper switch api     # next START press → OpenRouter
+dssh-whisper switch         # toggle
+```
+
+### `dssh-whisper` CLI
+
+```
+dssh-whisper status                # active track + daemon status + key presence
+dssh-whisper switch                # toggle api ↔ local
+dssh-whisper switch [api|local]    # set explicit track
+dssh-whisper start                 # start local daemon (dual install only)
+dssh-whisper stop | close          # stop local daemon
+dssh-whisper restart
+dssh-whisper logs [-f]             # tail systemd-user logs (dual install)
+dssh-whisper uninstall             # remove all dssh-whisper files
+```
+
+Daemon-related commands degrade gracefully on the API-only install
+(they print "no daemon to start", non-fatal).
+
+### Notes
+
+- 3DS firmware caps recording at ~7 s per press (the 256 KB mic buffer
+  fills at 16 kHz × 16-bit).  Tap **START** earlier to commit any time.
+- Use **HOME** (not START) to exit DSSH — START is dedicated to voice.
+- `~/.config/dssh-whisper/` is on `.gitignore` already; rotating the
+  API key is one `echo > api-key` away.
+- The 3DS code calls `~/.local/bin/dssh-whisper-shim` over a libssh2
+  exec channel.  The shim reads the active track and dispatches —
+  switching tracks doesn't require restarting the 3DS or the SSH
+  session.
 
 ---
 

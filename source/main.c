@@ -30,6 +30,7 @@
 #include "softkb.h"
 #include "mascot.h"
 #include "ime_pinyin.h"
+#include "voice.h"
 
 #define SOC_ALIGN       0x1000
 #define SOC_BUFFERSIZE  0x100000
@@ -156,6 +157,12 @@ int main(int argc, char *argv[]) {
      * a NULL ime by falling back to passthrough in CN mode. */
     ime_t      *ime  = NULL;
     softkb_t   *kb   = softkb_init(NULL);
+    /* Voice input: physical START toggles record/transcribe.  Server
+     * needs `dssh-whisper-shim` on PATH (installed by
+     * tools/install_whisper_server.sh).  voice_t is allocated up-front;
+     * mic only opens during the RECORDING state. */
+    voice_t    *voice = voice_init();
+    if (kb && voice) softkb_set_voice(kb, voice);
     if (!term || !r || !kbd || !kb || !mc) goto cleanup;
 
     if (net_init(err, sizeof(err)) != 0) {
@@ -165,7 +172,10 @@ int main(int argc, char *argv[]) {
     }
 
     /* Banner inside the terminal. */
-    terminal_write(term, "\x1b[36m3dssh M7\x1b[0m\r\n");
+    terminal_write(term,
+                   "\x1b[36mDSSH\x1b[0m  "
+                   "\x1b[2m●\x1b[0m  pinyin IME (R toggle)  "
+                   "\x1b[2m●\x1b[0m  voice (START to record)\r\n");
     if (romfs_ok) {
         terminal_write(term, "loading pinyin dictionary...\r\n");
     } else {
@@ -269,7 +279,18 @@ idle_loop:
             circlePosition cpad;
             hidCircleRead(&cpad);
 
-            if (down & KEY_START) break;
+            /* START is now the voice-input toggle: IDLE→RECORDING→
+             * TRANSCRIBING→IDLE.  The 3DS HOME button still exits any
+             * homebrew via the OS, so we don't need a software quit
+             * binding here. */
+            if (down & KEY_START) {
+                voice_toggle(voice, ssh);
+            }
+
+            /* Per-frame voice tick — drives recording cap, async aux
+             * channel write/eof/read, and forwards the transcribed
+             * Chinese text to the main SSH channel via ssh_write. */
+            voice_tick(voice, ssh);
 
             /* ── SSH receive ── */
             if (ssh && ssh_is_connected(ssh)) {
@@ -379,6 +400,7 @@ idle_loop:
     net_fini();
 
 cleanup:
+    if (voice) voice_free(voice);
     if (ime)  ime_free(ime);
     if (mc)   mascot_free(mc);
     if (kb)   softkb_free(kb);

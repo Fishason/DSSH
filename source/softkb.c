@@ -212,6 +212,11 @@ struct softkb_t {
     int           cand_box_x[IME_PAGE_SIZE];
     int           cand_box_w[IME_PAGE_SIZE];
     int           cand_box_n;            /* candidates currently visible */
+
+    /* M11 voice input — read-only handle, NULL when voice disabled.
+     * draw_status_row queries it each frame so the REC / spinner / ERR
+     * badge preempts the modifier label. */
+    const voice_t *voice;
 };
 
 softkb_t *softkb_init(ime_t *ime) {
@@ -233,6 +238,11 @@ void softkb_free(softkb_t *kb) { free(kb); }
 void softkb_set_ime(softkb_t *kb, ime_t *ime) {
     if (!kb) return;
     kb->ime = ime;
+}
+
+void softkb_set_voice(softkb_t *kb, const voice_t *v) {
+    if (!kb) return;
+    kb->voice = v;
 }
 
 softkb_page_t softkb_current_page(const softkb_t *kb) {
@@ -742,14 +752,31 @@ static void draw_status_row(softkb_t *kb, renderer_t *r,
     }
 
     /* ── Left slot: status indicator ─────────────────────────────────── */
+    /* Voice has highest priority — when REC / spinner / ERR is showing
+     * we suppress the modifier label entirely.  When voice is IDLE we
+     * fall through to keyboard_status_label() for SFT/CTL/ALT/etc. */
+    const char *voice_lbl = (kb && kb->voice) ? voice_status_label(kb->voice) : NULL;
+    uint32_t voice_bg = voice_lbl ? voice_status_bg(kb->voice) : 0;
+    uint32_t voice_fg = voice_lbl ? voice_status_fg(kb->voice) : 0;
+
     const char *status = kbd ? keyboard_status_label(kbd) : "   ";
-    int active = (status && strcmp(status, "   ") != 0);
+    int kbd_active = (status && strcmp(status, "   ") != 0);
 
     /* Always-drawn slot bg keeps the layout visually anchored. */
     C2D_DrawRectSolid(2, (float)slot_y, 0.07f,
                       (float)slot_w, (float)slot_h,
                       rgba_to_c2d_(COL_MODE_LBL_BG));
-    if (active) {
+
+    if (voice_lbl) {
+        /* Voice tint over the slot. */
+        if (voice_bg) {
+            C2D_DrawRectSolid(2, (float)slot_y, 0.072f,
+                              (float)slot_w, (float)slot_h,
+                              rgba_to_c2d_(voice_bg));
+        }
+        int vx = 2 + (slot_w - label_tw) / 2;
+        renderer_draw_text_px(vx, label_y, voice_lbl, voice_fg);
+    } else if (kbd_active) {
         /* Highlight overlay: faint blue tint behind the active label. */
         C2D_DrawRectSolid(2, (float)slot_y, 0.072f,
                           (float)slot_w, (float)slot_h,

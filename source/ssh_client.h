@@ -40,4 +40,40 @@ void ssh_set_pty_size(ssh_client_t *ssh, int cols, int rows);
  * to detect a stalled connection. */
 void ssh_keepalive_tick(ssh_client_t *ssh);
 
+/* ── Auxiliary channel API ──────────────────────────────────────────
+ * Opens a SECOND channel on the same SSH session (reusing auth and
+ * encryption) to exec a remote command — used by the voice-input
+ * subsystem to stream PCM audio to dssh-whisper-shim and read back the
+ * transcribed Chinese UTF-8 text.  The main shell channel is unaffected.
+ *
+ * Lifecycle: ssh_aux_exec → ssh_aux_write*N → ssh_aux_send_eof →
+ *            ssh_aux_read*N (until ssh_aux_eof) → ssh_aux_close.
+ * All read/write/send_eof calls are non-blocking and may return 0
+ * meaning "try again next frame".
+ */
+typedef struct ssh_aux_channel_t ssh_aux_channel_t;
+
+/* Open the aux channel and exec `cmd` on the remote.  This call briefly
+ * flips the session to blocking mode while it round-trips, then returns
+ * a non-blocking aux handle for the caller to pump per-frame.
+ * Returns NULL on failure (err_buf populated when non-NULL). */
+ssh_aux_channel_t *ssh_aux_exec(ssh_client_t *ssh, const char *cmd,
+                                char *err_buf, int err_sz);
+
+/* Non-blocking write.  Returns bytes written (>=0), 0 = EAGAIN, -1 = err. */
+int  ssh_aux_write(ssh_aux_channel_t *aux, const char *buf, int len);
+
+/* Tell the remote no more bytes coming.  Returns 0 done, 1 EAGAIN, -1 err. */
+int  ssh_aux_send_eof(ssh_aux_channel_t *aux);
+
+/* Non-blocking read.  Returns bytes read (>0), 0 = EAGAIN/no-data-yet,
+ * -1 = error.  Use ssh_aux_eof() to distinguish "more later" from EOF. */
+int  ssh_aux_read(ssh_aux_channel_t *aux, char *buf, int len);
+
+/* Returns 1 if the remote process has closed its stdout (response over). */
+int  ssh_aux_eof(const ssh_aux_channel_t *aux);
+
+/* Close + free.  Idempotent. */
+void ssh_aux_close(ssh_aux_channel_t *aux);
+
 #endif /* SSH_CLIENT_H */

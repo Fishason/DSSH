@@ -2,6 +2,7 @@
 #include "renderer.h"
 #include "keyboard.h"
 #include "ime_pinyin.h"
+#include "voice.h"
 
 /*
  * On-screen touch keyboard for the 3DS bottom screen (M4 + M7 IME).
@@ -36,6 +37,12 @@ typedef struct softkb_t softkb_t;
 softkb_t *softkb_init(ime_t *ime);
 void      softkb_set_ime(softkb_t *kb, ime_t *ime);
 void      softkb_free(softkb_t *kb);
+
+/* Optional voice-input handle.  When non-NULL, softkb_draw renders
+ * RECORDING/TRANSCRIBING/ERROR badges in the top-left status slot,
+ * preempting the modifier indicator.  Pass NULL or call with NULL to
+ * disable. */
+void      softkb_set_voice(softkb_t *kb, const voice_t *v);
 
 /* Render the current page + status row to the bottom screen.  Must be
  * called inside C2D_SceneBegin(bottom_target). */

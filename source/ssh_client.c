@@ -321,3 +321,92 @@ void ssh_keepalive_tick(ssh_client_t *ssh) {
     int unused;
     libssh2_keepalive_send(ssh->session, &unused);
 }
+
+/* ── Auxiliary channel implementation ─────────────────────────────── */
+
+struct ssh_aux_channel_t {
+    LIBSSH2_SESSION *session;
+    LIBSSH2_CHANNEL *channel;
+    int              eof_sent;
+};
+
+ssh_aux_channel_t *ssh_aux_exec(ssh_client_t *ssh, const char *cmd,
+                                char *err_buf, int err_sz) {
+    if (!ssh || !ssh->connected || !ssh->session || !cmd) return NULL;
+
+    /* Briefly flip session to blocking mode so open + exec round-trip
+     * inline.  This stalls the main loop for ~one TCP RTT (~50-200 ms),
+     * which is invisible alongside the multi-second voice transcription
+     * we're about to wait for.  An async open would be cleaner but adds
+     * substantial state-machine code for no perceptible UX gain. */
+    libssh2_session_set_blocking(ssh->session, 1);
+
+    LIBSSH2_CHANNEL *ch = libssh2_channel_open_session(ssh->session);
+    if (!ch) {
+        copy_libssh2_err(err_buf, err_sz, ssh->session, "aux open_session", 0);
+        libssh2_session_set_blocking(ssh->session, 0);
+        return NULL;
+    }
+    int rc = libssh2_channel_exec(ch, cmd);
+    if (rc != 0) {
+        copy_libssh2_err(err_buf, err_sz, ssh->session, "aux exec", rc);
+        libssh2_channel_free(ch);
+        libssh2_session_set_blocking(ssh->session, 0);
+        return NULL;
+    }
+
+    libssh2_session_set_blocking(ssh->session, 0);
+
+    ssh_aux_channel_t *a = calloc(1, sizeof(*a));
+    if (!a) {
+        copy_err(err_buf, err_sz, "aux alloc oom");
+        libssh2_channel_close(ch);
+        libssh2_channel_free(ch);
+        return NULL;
+    }
+    a->session = ssh->session;
+    a->channel = ch;
+    return a;
+}
+
+int ssh_aux_write(ssh_aux_channel_t *aux, const char *buf, int len) {
+    if (!aux || !aux->channel || len < 0) return -1;
+    if (len == 0) return 0;
+    ssize_t n = libssh2_channel_write(aux->channel, buf, (size_t)len);
+    if (n == LIBSSH2_ERROR_EAGAIN) return 0;
+    if (n < 0) return -1;
+    return (int)n;
+}
+
+int ssh_aux_send_eof(ssh_aux_channel_t *aux) {
+    if (!aux || !aux->channel) return -1;
+    if (aux->eof_sent) return 0;
+    int rc = libssh2_channel_send_eof(aux->channel);
+    if (rc == 0) { aux->eof_sent = 1; return 0; }
+    if (rc == LIBSSH2_ERROR_EAGAIN) return 1;
+    return -1;
+}
+
+int ssh_aux_read(ssh_aux_channel_t *aux, char *buf, int len) {
+    if (!aux || !aux->channel || len <= 0) return -1;
+    ssize_t n = libssh2_channel_read(aux->channel, buf, (size_t)len);
+    if (n == LIBSSH2_ERROR_EAGAIN) return 0;
+    if (n < 0) return -1;
+    return (int)n;
+}
+
+int ssh_aux_eof(const ssh_aux_channel_t *aux) {
+    if (!aux || !aux->channel) return 1;
+    /* libssh2_channel_eof takes a non-const pointer in older libssh2
+     * versions; drop const here to match. */
+    return libssh2_channel_eof((LIBSSH2_CHANNEL *)aux->channel) ? 1 : 0;
+}
+
+void ssh_aux_close(ssh_aux_channel_t *aux) {
+    if (!aux) return;
+    if (aux->channel) {
+        libssh2_channel_close(aux->channel);
+        libssh2_channel_free(aux->channel);
+    }
+    free(aux);
+}
