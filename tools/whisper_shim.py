@@ -202,6 +202,17 @@ def _transcribe(pcm: bytes) -> str | None:
     return None
 
 
+# Whisper hallucination guard.  whisper-large-v3 is known to fill silent
+# audio with YouTube subtitle boilerplate ("请不要吝啬您的点赞、订阅...");
+# this is acknowledged by OpenAI in their model card.  We don't try to
+# catch the full menagerie of subtitle templates — just the two
+# unmistakable Chinese markers.  Either keyword in a transcription means
+# the user almost certainly recorded silence, so we replace the output
+# with a literal "empty" sentinel.
+def _is_hallucination(text: str) -> bool:
+    return bool(text) and ("吝啬" in text or "点赞" in text)
+
+
 # ── Chat: DeepSeek ─────────────────────────────────────────────────
 def _ask_deepseek(question: str, history: list[list[str]]) -> str | None:
     """history is a list of [Q, A] pairs (oldest first).  Each entry expands
@@ -274,6 +285,8 @@ def _run_default() -> int:
     text = _transcribe(pcm)
     if text is None:
         return 1
+    if _is_hallucination(text):
+        text = "empty"
     sys.stdout.write(text)
     sys.stdout.flush()
     return 0
@@ -340,6 +353,15 @@ def _run_ask() -> int:
     if not question:
         _emit_ask_json("", "[transcription failed]")
         return 1
+
+    if _is_hallucination(question):
+        # Silence in → YouTube boilerplate out.  Skip the DeepSeek call
+        # entirely (don't pollute history, don't burn a token) and emit
+        # a literal "empty" sentinel for both the question and answer
+        # so the modal makes the empty-input case obvious.
+        _dlog("  → hallucination markers detected; emitting 'empty'")
+        _emit_ask_json("empty", "empty")
+        return 0
 
     answer = _ask_deepseek(question, history)
     _dlog(f"  answer = {(answer or '')[:200]!r}")
