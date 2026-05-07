@@ -202,34 +202,6 @@ def _transcribe(pcm: bytes) -> str | None:
     return None
 
 
-# ── Whisper hallucination detection ────────────────────────────────
-# Trained on YouTube subtitles, the Whisper family loves to fill silence
-# or near-silence with hard-coded "please subscribe / like / share"
-# boilerplate.  When the user holds START with no actual speech, this
-# garbage was reaching the SSH terminal.  Detect and rewrite it to a
-# project-page URL — that's both a useful no-op marker AND a way to
-# surface the project's home if anyone ever sees it land in their
-# shell.
-_HALLUCINATION_MARKERS = (
-    "点赞", "點贊", "订阅", "訂閱", "关注", "關注",
-    "打赏", "打賞", "转发", "轉發", "投币", "三连", "三連",
-    "字幕由", "字幕组", "字幕組",
-    "感谢观看", "感謝觀看", "感谢您的观看", "感謝您的觀看",
-    "请订阅", "請訂閱", "请关注", "請關注", "请不要吝啬", "請不要吝嗇",
-    "subscribe to my channel", "thanks for watching",
-    "like and subscribe", "please subscribe",
-    "amara.org",
-)
-GITHUB_URL = "https://github.com/Fishason/DSSH"
-
-
-def _is_hallucination(text: str) -> bool:
-    if not text:
-        return False
-    low = text.lower()
-    return any(m.lower() in low for m in _HALLUCINATION_MARKERS)
-
-
 # ── Chat: DeepSeek ─────────────────────────────────────────────────
 def _ask_deepseek(question: str, history: list[list[str]]) -> str | None:
     """history is a list of [Q, A] pairs (oldest first).  Each entry expands
@@ -302,11 +274,6 @@ def _run_default() -> int:
     text = _transcribe(pcm)
     if text is None:
         return 1
-    if _is_hallucination(text):
-        # Whisper invented YouTube boilerplate from silence — overwrite
-        # with the project URL so the user sees something meaningful in
-        # their shell instead of "请订阅、点赞、关注".
-        text = GITHUB_URL
     sys.stdout.write(text)
     sys.stdout.flush()
     return 0
@@ -373,13 +340,6 @@ def _run_ask() -> int:
     if not question:
         _emit_ask_json("", "[transcription failed]")
         return 1
-
-    if _is_hallucination(question):
-        # Silence in → YouTube subtitle out.  Don't waste a DeepSeek
-        # call and don't pollute history; just emit the project URL.
-        _dlog("  → hallucination detected, returning GITHUB_URL")
-        _emit_ask_json("(silence)", GITHUB_URL)
-        return 0
 
     answer = _ask_deepseek(question, history)
     _dlog(f"  answer = {(answer or '')[:200]!r}")
