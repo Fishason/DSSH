@@ -31,6 +31,7 @@
 #include "mascot.h"
 #include "ime_pinyin.h"
 #include "voice.h"
+#include "ai_modal.h"
 
 #define SOC_ALIGN       0x1000
 #define SOC_BUFFERSIZE  0x100000
@@ -163,6 +164,9 @@ int main(int argc, char *argv[]) {
      * mic only opens during the RECORDING state. */
     voice_t    *voice = voice_init();
     if (kb && voice) softkb_set_voice(kb, voice);
+    /* M12: AI-ask modal — pops over the soft keyboard when the user
+     * presses L+START and a Q&A returns from DeepSeek. */
+    ai_modal_t *aim   = ai_modal_init();
     if (!term || !r || !kbd || !kb || !mc) goto cleanup;
 
     if (net_init(err, sizeof(err)) != 0) {
@@ -279,18 +283,44 @@ idle_loop:
             circlePosition cpad;
             hidCircleRead(&cpad);
 
-            /* START is now the voice-input toggle: IDLE→RECORDING→
-             * TRANSCRIBING→IDLE.  The 3DS HOME button still exits any
-             * homebrew via the OS, so we don't need a software quit
-             * binding here. */
-            if (down & KEY_START) {
-                voice_toggle(voice, ssh);
+            /* M12 — AI-ask modal swallows input.  When the modal is up
+             * (or animating in/out), suppress all routing to softkb /
+             * keyboard / IME / mascot.  A=keep history, B=clear, touch
+             * anywhere on the bottom screen=clear. */
+            int modal_open = ai_modal_visible(aim);
+
+            if (modal_open) {
+                if (down & KEY_A) {
+                    voice_ai_close_keep(voice);
+                    ai_modal_close(aim);
+                }
+                if (down & KEY_B) {
+                    voice_ai_close_clear(voice);
+                    ai_modal_close(aim);
+                }
+            } else {
+                /* L + START → AI ask mode.  Plain START → voice-IME mode.
+                 * 3DS HOME exits any homebrew, so START is fully ours. */
+                if (down & KEY_START) {
+                    if (held & KEY_L) voice_ai_toggle(voice, ssh);
+                    else              voice_toggle(voice, ssh);
+                }
             }
 
             /* Per-frame voice tick — drives recording cap, async aux
              * channel write/eof/read, and forwards the transcribed
-             * Chinese text to the main SSH channel via ssh_write. */
+             * Chinese text to the main SSH channel via ssh_write.  Also
+             * transitions us into VOICE_AI_SHOWING after a successful
+             * AI transcribe; we open the modal once that happens. */
+            voice_state_t prev_state = voice_state(voice);
             voice_tick(voice, ssh);
+            if (prev_state != VOICE_AI_SHOWING &&
+                voice_state(voice) == VOICE_AI_SHOWING) {
+                ai_modal_open(aim,
+                              voice_ai_question(voice),
+                              voice_ai_answer(voice));
+            }
+            ai_modal_tick(aim);
 
             /* ── SSH receive ── */
             if (ssh && ssh_is_connected(ssh)) {
@@ -323,9 +353,17 @@ idle_loop:
                 mascot_set_alert(mc, stall_alert);
             }
 
-            /* ── Physical keys (Esc / Enter / BS / D-pad / R / scroll) ── */
-            const char *out = keyboard_handle_input(kbd, term, down, held, cpad.dy);
-            if (out) send_to_ssh(ssh, term, out, (int)strlen(out));
+            /* ── Physical keys (Esc / Enter / BS / D-pad / R / scroll) ──
+             * When the AI-ask modal is showing (or animating), suppress
+             * the keyboard handler entirely so A=close-keep doesn't
+             * also fire Enter to the SSH terminal, B=close-clear
+             * doesn't also fire Backspace, etc.  We pass `down=0` so
+             * the handler still ticks held-state timers (keeping
+             * modifier release detection coherent for the post-modal
+             * world) but registers no edge events. */
+            u32 input_down = modal_open ? 0u : down;
+            const char *out = keyboard_handle_input(kbd, term, input_down, held, cpad.dy);
+            if (out && !modal_open) send_to_ssh(ssh, term, out, (int)strlen(out));
 
             /* ── Touch / soft keyboard ── */
             int touch_pressed = (held & KEY_TOUCH) ? 1 : 0;
@@ -347,7 +385,15 @@ idle_loop:
              * no key extends below y=213 in normal mode, and the debug
              * page handles its own widgets). */
             int show_mascot = !softkb_in_debug(kb) && softkb_mascot_enabled(kb);
-            if (touch_down && ty >= 214 && show_mascot) {
+            if (modal_open) {
+                /* While the AI-ask modal is up, any bottom-screen tap
+                 * dismisses it (= clear history).  Block all routing
+                 * to softkb / mascot. */
+                if (touch_down) {
+                    voice_ai_close_clear(voice);
+                    ai_modal_close(aim);
+                }
+            } else if (touch_down && ty >= 214 && show_mascot) {
                 if (mascot_hit_test(mc, tx, ty))
                     mascot_on_touched(mc, tx);
             } else {
@@ -392,6 +438,11 @@ idle_loop:
                 if (softkb_mascot_enabled(kb)) mascot_draw(mc);
             }
 
+            /* M12 — modal lays over softkb + clock + mascot.  Drawn
+             * last so its dimming overlay correctly covers everything
+             * below. */
+            ai_modal_draw(aim);
+
             C3D_FrameEnd(0);
         }
 
@@ -400,6 +451,7 @@ idle_loop:
     net_fini();
 
 cleanup:
+    if (aim)   ai_modal_free(aim);
     if (voice) voice_free(voice);
     if (ime)  ime_free(ime);
     if (mc)   mascot_free(mc);

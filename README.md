@@ -56,12 +56,18 @@
 - **Pinyin input method** — top 300k entries from rime-ice, plus
   abbreviation matching (`nh` → 你好), prefix fallback (`nihaoz`
   auto-falls-back to `nihao`), and a candidate cursor.
-- **Voice input (NEW in v1.0)** — press **START**, speak a Chinese
-  sentence, press **START** again; ~1-2 s later the transcribed text
-  drops straight into the SSH terminal.  Default backend is OpenRouter
+- **Voice input (v1.0)** — press **START**, speak a Chinese sentence,
+  press **START** again; ~1-2 s later the transcribed text drops
+  straight into the SSH terminal.  Default backend is OpenRouter
   Whisper Large V3 Turbo over the cloud (`$0.04` per audio-hour); a
   self-hosted whisper.cpp track is available if you'd rather not depend
   on an external API.
+- **Voice AI ask (NEW in v1.1)** — hold **L** and press **START** to
+  ask DeepSeek-Chat a question by voice; the answer pops up in a
+  bottom-screen modal with markdown-styled rendering (headers in
+  yellow, code in cyan, bullets, etc.) without disturbing the SSH
+  session above.  Press **A** in the modal to keep history for follow-
+  up questions, **B** to clear and start a new conversation.
 - **RSA-4096 public-key auth** — libssh2 + mbedTLS, private key read
   from the SD card.
 - **Full physical-key mapping** — D-pad arrow keys, hold-style modifiers
@@ -201,38 +207,106 @@ small server-side shim transcribes via Whisper.
 
 ### Recommended install — API track
 
-Get an OpenRouter API key from
-[openrouter.ai/settings/keys](https://openrouter.ai/settings/keys)
-(typical cost: **$0.04 per audio-hour** ≈ a few cents per month for
-ordinary use).  Then on your server:
+The voice features need **two API keys** on the server.  Both
+together cost a few cents per month for personal use:
+
+| Key | Where to get it | What it powers | Required? |
+|---|---|---|---|
+| **OpenRouter** | [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) | Whisper Large V3 Turbo (speech → text) | **Required** for voice IME (START) and AI ask (L+START) |
+| **DeepSeek** | [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) | DeepSeek-Chat (AI question answering) | Optional — only needed for L+START AI ask; voice IME works without it |
+
+Pricing: OpenRouter Whisper Turbo is `$0.04 / audio-hour` (~a few
+cents per month for an individual); DeepSeek-Chat is roughly
+`$0.0001 per question`.  Both providers give a small free credit on
+sign-up, more than enough to test.
+
+#### One-command install
+
+SSH into your server, then:
 
 ```bash
 git clone https://github.com/Fishason/DSSH.git ~/dssh-repo
 bash ~/dssh-repo/tools/install_whisper_api.sh
-# ↑ pastes your OpenRouter API key when prompted, or set it via:
-#    OPENROUTER_API_KEY="sk-or-v1-..." bash ~/dssh-repo/tools/install_whisper_api.sh
 ```
 
-Footprint: a 5 KB Python shim + a 3 KB bash CLI wrapper.  No daemon,
-no model, nothing to monitor.  Config files:
+The installer will interactively prompt for both keys:
+
+```
+▶ checking prerequisites...
+✓ python3 3.10
+▶ installing daemon + shim + dssh-whisper CLI ...
+▶ writing track config...
+
+Need your OpenRouter API key (https://openrouter.ai/settings/keys).
+Used for Whisper transcription.  Looks like:  sk-or-v1-...
+Paste your OpenRouter key (or empty to skip): █
+
+✓ api-key saved at /home/you/.config/dssh-whisper/api-key (chmod 0600)
+
+Optional: DeepSeek API key (https://platform.deepseek.com/api_keys).
+Used only by the L+START voice AI-ask modal — skip if you only
+want plain voice IME.  Looks like:  sk-...
+Paste your DeepSeek key (or empty to skip): █
+
+✓ deepseek-key saved at /home/you/.config/dssh-whisper/deepseek-key (chmod 0600)
+✓ dssh-whisper-api installed (lightweight, OpenRouter Whisper Turbo).
+```
+
+**Non-interactive** install (handy for CI / Ansible / clean rebuilds):
+
+```bash
+OPENROUTER_API_KEY="sk-or-v1-..." \
+DEEPSEEK_API_KEY="sk-..." \
+bash ~/dssh-repo/tools/install_whisper_api.sh
+```
+
+#### Verify the install worked
+
+```bash
+$ dssh-whisper status
+active track: api
+(API-only install — no local daemon)
+api-key:  ✓ /home/you/.config/dssh-whisper/api-key
+```
+
+The 3DS calls `~/.local/bin/dssh-whisper-shim` over SSH-exec on every
+**START** press; no further server-side action is needed.
+
+#### What the installer dropped on disk
 
 ```
 ~/.config/dssh-whisper/
-├── track       # "api" or "local"
-└── api-key     # chmod 0600
+├── track            # "api" or "local"
+├── api-key          # chmod 0600 — OpenRouter
+└── deepseek-key     # chmod 0600 — DeepSeek (optional)
 ~/.local/bin/
-├── dssh-whisper          # CLI wrapper
-└── dssh-whisper-shim     # the 3DS reaches this over SSH-exec
+├── dssh-whisper          # CLI wrapper (start/stop/status/switch/uninstall)
+└── dssh-whisper-shim     # symlink the 3DS reaches over SSH-exec
+~/.local/share/dssh-whisper/
+└── whisper_shim.py       # the actual Python that talks to both APIs
+```
+
+Footprint: ~30 KB.  No daemon, no model, nothing to monitor.
+
+#### Rotating a key later
+
+Compromised key, expired credit, swapping providers — overwrite the
+file:
+
+```bash
+echo 'sk-or-v1-NEW_KEY' > ~/.config/dssh-whisper/api-key
+chmod 0600 ~/.config/dssh-whisper/api-key
+# (no service to restart — the shim re-reads the key on every call)
 ```
 
 | Field | Value |
 |---|---|
-| Inference | OpenRouter Whisper Large V3 Turbo (cloud) |
-| Latency (4 s clip) | ~1-2 s |
-| Cost | $0.04 / audio-hour |
+| Inference | OpenRouter Whisper Large V3 Turbo (cloud) + DeepSeek-Chat |
+| Latency (4 s clip) | ~1-2 s STT, +1-2 s LLM for AI ask |
+| Cost | $0.04 / audio-hour STT + ~$0.0001 / AI question |
 | Server install size | ~30 KB |
 | Server CPU load | negligible |
-| Internet | required (HTTPS to openrouter.ai) |
+| Internet | required (HTTPS to openrouter.ai + api.deepseek.com) |
 
 That's enough for 99% of users — install it, press START, done.
 
@@ -252,9 +326,55 @@ dssh-whisper uninstall             # remove all dssh-whisper files
 Daemon-related commands degrade gracefully on the API-only install
 (they print "no daemon to start", non-fatal).
 
+### Quick AI questions (L + START) — v1.1
+
+Stuck in `yazi` and forgot the keybind for hidden files?  Need a
+one-liner regex for `vim`?  Hold **L** and press **START** — you're
+now asking the AI instead of typing into the SSH session.  A modal
+pops up on the bottom screen with the answer; the SSH terminal on top
+is left untouched.
+
+| In modal | Effect |
+|---|---|
+| **A** | close, **keep** the Q&A in history; next L+START continues the conversation |
+| **B** or any **touch** on the bottom screen | close, **clear** history; next L+START is fresh |
+
+Conversation history caps at 5 turns; if you keep pressing A past
+that, the oldest turn drops off (FIFO).
+
+The model is `deepseek-chat` (DeepSeek direct API, not via
+OpenRouter) — picked for its sub-second latency and very low pricing
+(~$0.0001 per question for personal use).  Answers are 6-15 sentences
+typically; long answers wrap inside the modal and overflow truncates
+with a trailing `...`.
+
+#### Markdown rendering in the modal
+
+DeepSeek tends to use markdown.  The modal renders common forms in
+colour rather than showing raw syntax characters:
+
+| Markdown source | Modal rendering |
+|---|---|
+| `# Heading` / `## Heading` / `### Heading` | yellow accent, `#` markers stripped |
+| `` `inline code` `` | cyan, backticks stripped |
+| ` ``` …code block… ``` ` | cyan multi-line, fences stripped |
+| `- item` / `* item` | `• item` (dim grey bullet + normal text) |
+| `**bold**` / `*italic*` | normal text — syntax stripped, no emphasis (no bold font at this size) |
+| `[link text](url)` | `link text` only — URL dropped |
+| `~~strikethrough~~` | normal text — syntax stripped |
+
+#### DeepSeek key
+
+You'll need a **DeepSeek API key** from
+[platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys).
+The installer prompts for it alongside the OpenRouter key (skippable
+— plain voice IME works without it).  Stored at
+`~/.config/dssh-whisper/deepseek-key` chmod 0600 — see [Rotating a
+key later](#rotating-a-key-later) above to change it.
+
 ### Notes
 
-- 3DS firmware caps recording at ~7 s per press (the 256 KB mic buffer
+- 3DS firmware caps recording at ~32 s per press (the 1 MB mic buffer
   fills at 16 kHz × 16-bit).  Tap **START** earlier to commit any time.
 - Use **HOME** (not START) to exit DSSH — START is dedicated to voice.
 - `~/.config/dssh-whisper/` is on `.gitignore` already; rotating the

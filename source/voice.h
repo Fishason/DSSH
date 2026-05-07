@@ -27,6 +27,10 @@ typedef enum {
     VOICE_IDLE = 0,
     VOICE_RECORDING,
     VOICE_TRANSCRIBING,
+    /* M12: AI-ask modal is showing.  voice_state_frame() drives the
+     * 0.5 s fade-in and the modal renderer.  Stays in this state until
+     * voice_ai_close_keep() (A) or voice_ai_close_clear() (B / touch). */
+    VOICE_AI_SHOWING,
     VOICE_ERROR,
 } voice_state_t;
 
@@ -39,6 +43,29 @@ void     voice_free(voice_t *v);
  *   TRANSCRIBING → IDLE (cancel)
  *   ERROR        → IDLE (clear error)                                  */
 void voice_toggle(voice_t *v, ssh_client_t *ssh);
+
+/* M12: triggered by physical L + KEY_START.  Same shape as voice_toggle
+ * but flips an internal `ai_mode` flag — the recording is destined for
+ * the AI-ask modal (DeepSeek via dssh-whisper-shim --ask) instead of
+ * being typed into the SSH shell. */
+void voice_ai_toggle(voice_t *v, ssh_client_t *ssh);
+
+/* Modal dismiss while in VOICE_AI_SHOWING.
+ *   close_keep  — A pressed.  Append (Q,A) to history; next L+START
+ *                 sends accumulated history.
+ *   close_clear — B pressed or touch anywhere on bottom screen.
+ *                 Discard history; next L+START is a fresh chat.    */
+void voice_ai_close_keep(voice_t *v);
+void voice_ai_close_clear(voice_t *v);
+
+/* Modal content accessors (read-only). */
+const char *voice_ai_question(const voice_t *v);
+const char *voice_ai_answer(const voice_t *v);
+int         voice_ai_history_count(const voice_t *v);
+
+/* True iff the current cycle is destined for AI ask (used by softkb to
+ * pick a different status badge). */
+int  voice_in_ai_cycle(const voice_t *v);
 
 /* Per-frame: drives the recording-length cap, the non-blocking aux
  * channel write/eof/read sequence, and the error decay timer. */

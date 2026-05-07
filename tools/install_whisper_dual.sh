@@ -222,15 +222,15 @@ if [ ! -f "$CFG_DIR/api-key" ]; then
     elif [ -t 0 ]; then
         echo
         echo "Need your OpenRouter API key (https://openrouter.ai/settings/keys)."
-        echo "It looks like:  sk-or-v1-...."
-        printf "Paste your key (or empty to skip — then track=local will be the only working option): "
+        echo "Used for Whisper transcription.  Looks like:  sk-or-v1-...."
+        printf "Paste your OpenRouter key (or empty to skip — then track=local will be the only working option): "
         read -r KEY
         if [ -n "$KEY" ]; then
             printf '%s\n' "$KEY" > "$CFG_DIR/api-key"
             chmod 0600 "$CFG_DIR/api-key"
             ok "api-key saved at $CFG_DIR/api-key (chmod 0600)"
         else
-            err "no key — auto-switching default track to 'local'"
+            err "no OpenRouter key — auto-switching default track to 'local'"
             echo "local" > "$CFG_DIR/track"
         fi
     else
@@ -238,7 +238,34 @@ if [ ! -f "$CFG_DIR/api-key" ]; then
         echo "local" > "$CFG_DIR/track"
     fi
 else
-    ok "api-key already present at $CFG_DIR/api-key"
+    ok "api-key (OpenRouter) already present at $CFG_DIR/api-key"
+fi
+
+# DeepSeek key — only needed for the L+START AI-question modal.  Voice
+# IME (the default START key) does NOT need this.
+if [ ! -f "$CFG_DIR/deepseek-key" ]; then
+    if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+        printf '%s\n' "$DEEPSEEK_API_KEY" > "$CFG_DIR/deepseek-key"
+        chmod 0600 "$CFG_DIR/deepseek-key"
+        ok "deepseek-key written from \$DEEPSEEK_API_KEY"
+    elif [ -t 0 ]; then
+        echo
+        echo "Optional: DeepSeek API key (https://platform.deepseek.com/api_keys)."
+        echo "Used only by the L+START voice AI-ask modal — skip if you only"
+        echo "want plain voice IME.  Looks like:  sk-..."
+        printf "Paste your DeepSeek key (or empty to skip): "
+        read -r DSKEY
+        if [ -n "$DSKEY" ]; then
+            printf '%s\n' "$DSKEY" > "$CFG_DIR/deepseek-key"
+            chmod 0600 "$CFG_DIR/deepseek-key"
+            ok "deepseek-key saved at $CFG_DIR/deepseek-key (chmod 0600)"
+        else
+            echo "  (skipped — L+START AI ask will fail until you write one:"
+            echo "    echo 'sk-...' > $CFG_DIR/deepseek-key && chmod 0600 $CFG_DIR/deepseek-key)"
+        fi
+    fi
+else
+    ok "deepseek-key already present at $CFG_DIR/deepseek-key"
 fi
 
 # ─────────────────────────────────────────────────────────────────────

@@ -35,6 +35,12 @@ void renderer_draw_text(renderer_t *r, int x_cells, int y_cells,
  * key cannot be exactly centered on a 6 px cell grid). */
 void renderer_draw_text_px(int px, int py, const char *text, uint32_t rgba);
 
+/* Same as renderer_draw_text_px but with an explicit z-depth.  Used by
+ * the AI-ask modal which needs its text drawn ABOVE its own background
+ * (the default 0.5 z would put text below the modal bg). */
+void renderer_draw_text_px_z(int px, int py, float z,
+                             const char *text, uint32_t rgba);
+
 /* Same as renderer_draw_text_px but each glyph pixel is rendered as a
  * scale×scale block.  Used for the iOS-style key-press popup bubble
  * which shows the tapped character at 2× normal size. */

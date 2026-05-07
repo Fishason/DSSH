@@ -240,6 +240,11 @@ void renderer_draw_text(renderer_t *r, int x_cells, int y_cells,
 }
 
 void renderer_draw_text_px(int px, int py, const char *text, uint32_t rgba) {
+    renderer_draw_text_px_z(px, py, 0.5f, text, rgba);
+}
+
+void renderer_draw_text_px_z(int px, int py, float z,
+                             const char *text, uint32_t rgba) {
     if (!text) return;
     u32 color = rgba_to_c2d(rgba);
     float fx = (float)px;
@@ -247,7 +252,7 @@ void renderer_draw_text_px(int px, int py, const char *text, uint32_t rgba) {
     const char *s = text;
     while (*s) {
         uint32_t cp = utf8_next(&s);
-        fx += (float)draw_codepoint_px(fx, fy, 0.5f, cp, color);
+        fx += (float)draw_codepoint_px(fx, fy, z, cp, color);
     }
 }
 
