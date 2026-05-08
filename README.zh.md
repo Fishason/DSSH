@@ -110,11 +110,19 @@ DSSH 跑在 **破解过的 3DS / 2DS / New 3DS** 上。需要 Homebrew Launcher
 ## 服务器侧准备（一次性）
 
 3DS 上的 libssh2 用的是 mbedTLS 后端，**硬编码不支持 ed25519**。所以要
-专门给 3DS 生成一把 RSA-4096 公私钥对，原来 PC 上的 ed25519 不动：
+专门给 3DS 生成一把 RSA-4096 公私钥对，原来 PC 上的 ed25519 不动。
+
+> ⚠️ **`-m PEM` 这个参数必加。**  devkitPro 仓库里的 `3ds-mbedtls`
+> 还是 2.28.x 版本，**只能解析传统 PEM 格式**的私钥（首行
+> `-----BEGIN RSA PRIVATE KEY-----`）。Ubuntu 18.04+ / macOS 上的
+> 新版 `ssh-keygen` 默认输出的是**新 OpenSSH 格式**（首行
+> `-----BEGIN OPENSSH PRIVATE KEY-----`），mbedtls 2.28 **解析不了**
+> ——不加 `-m PEM` 的话 DSSH 会在握手时报 "auth failed"。
 
 ```bash
-# 1. 在你的 PC 上生成 3DS 专用 RSA 密钥
-ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa_3ds -C "3ds-ssh-client"
+# 1. 在你的 PC 上生成 3DS 专用 RSA 密钥。-m PEM 强制传统 PEM 格式，
+#    这样 3DS 上的 mbedtls 才能解析。
+ssh-keygen -t rsa -b 4096 -m PEM -f ~/.ssh/id_rsa_3ds -C "3ds-ssh-client"
 
 # 2. 把公钥复制到服务器的 authorized_keys
 ssh-copy-id -i ~/.ssh/id_rsa_3ds.pub user@your-server.example.com
@@ -122,6 +130,17 @@ ssh-copy-id -i ~/.ssh/id_rsa_3ds.pub user@your-server.example.com
 # 3. 验证从 PC 用新 RSA 能连
 ssh -i ~/.ssh/id_rsa_3ds user@your-server.example.com 'echo OK'
 ```
+
+**已经有 OpenSSH 格式的私钥怎么办？**  原地转格式即可，**不用**再
+往服务器加公钥（公钥不变）：
+
+```bash
+ssh-keygen -p -m PEM -f ~/.ssh/id_rsa_3ds
+# 输入旧 passphrase（如果原来没有就直接回车）
+# 转换后文件首行应该是：-----BEGIN RSA PRIVATE KEY-----
+```
+
+可以用 `head -1 ~/.ssh/id_rsa_3ds` 检查首行确认格式。
 
 **安全建议**：编辑服务器的 `~/.ssh/authorized_keys`，给这把 RSA 那一行
 前面加 `from="<家里公网 IP>"`，这样即使 SD 卡丢了，钥匙也只能从你家网

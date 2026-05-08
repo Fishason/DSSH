@@ -10,15 +10,29 @@ The libssh2 + mbedTLS stack on 3DS does NOT support ed25519 keys.  Add a
 new RSA-4096 key alongside any existing keys — the original keys keep
 working from your PC, and the 3DS uses RSA only.
 
+> ⚠️ **Pass `-m PEM`.**  devkitPro's `3ds-mbedtls` is pinned at 2.28.x
+> and can only parse traditional PEM private keys
+> (`-----BEGIN RSA PRIVATE KEY-----`).  Newer `ssh-keygen` defaults to
+> the OpenSSH format (`-----BEGIN OPENSSH PRIVATE KEY-----`) which
+> mbedtls 2.28 cannot read — DSSH will fail at handshake without it.
+
 ```bash
-# 1. Generate a fresh 3DS-only RSA key
-ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa_3ds -C "3ds-ssh-client"
+# 1. Generate a fresh 3DS-only RSA key (-m PEM = traditional format)
+ssh-keygen -t rsa -b 4096 -m PEM -f ~/.ssh/id_rsa_3ds -C "3ds-ssh-client"
 
 # 2. Add the public half to the server's authorized_keys
 ssh-copy-id -i ~/.ssh/id_rsa_3ds.pub user@your-server.example.com
 
 # 3. Verify
 ssh -i ~/.ssh/id_rsa_3ds user@your-server.example.com 'echo OK'
+```
+
+If you already have a 3DS RSA key in OpenSSH format, convert it in
+place (no need to re-add the public half):
+
+```bash
+ssh-keygen -p -m PEM -f ~/.ssh/id_rsa_3ds
+# After conversion: head -1 ~/.ssh/id_rsa_3ds  → -----BEGIN RSA PRIVATE KEY-----
 ```
 
 Optional but recommended: prepend the line in the server's

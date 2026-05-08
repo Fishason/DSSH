@@ -11,9 +11,15 @@ port = 22
 user = ubuntu
 
 # Path to your RSA private key on the SD card.
-# Generate this on your PC with:
-#   ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa_3ds -C "3ds-ssh-client"
+# Generate this on your PC with (-m PEM is REQUIRED — see note below):
+#   ssh-keygen -t rsa -b 4096 -m PEM -f ~/.ssh/id_rsa_3ds -C "3ds-ssh-client"
 # Then ssh-copy-id the public key to the server, and copy the private key here.
+#
+# IMPORTANT: 3DS mbedtls 2.28 only parses traditional PEM keys
+# (-----BEGIN RSA PRIVATE KEY-----).  Without -m PEM, modern ssh-keygen
+# emits OpenSSH format (-----BEGIN OPENSSH PRIVATE KEY-----) and the 3DS
+# will fail with "auth failed" at handshake.  Convert an existing key
+# in place with:  ssh-keygen -p -m PEM -f ~/.ssh/id_rsa_3ds
 key_path = sdmc:/3ds/3dssh/id_rsa
 
 # Passphrase for the key, or leave empty for an unencrypted key.

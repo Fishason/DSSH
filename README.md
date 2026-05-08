@@ -125,11 +125,20 @@ Homebrew Launcher (HBL) or a CIA installer like FBI.
 The 3DS libssh2 build uses mbedTLS as its crypto backend and
 **hardcodes-disables ed25519**.  So you generate a fresh RSA-4096
 keypair just for the 3DS — your existing ed25519 key on the PC keeps
-working untouched:
+working untouched.
+
+> ⚠️ **The `-m PEM` flag matters.**  devkitPro's `3ds-mbedtls`
+> package is pinned at 2.28.x, which can only parse the **traditional
+> PEM** private-key format (`-----BEGIN RSA PRIVATE KEY-----`).  Recent
+> `ssh-keygen` (Ubuntu 18.04+, macOS) defaults to the **new OpenSSH
+> format** (`-----BEGIN OPENSSH PRIVATE KEY-----`) which mbedtls 2.28
+> *cannot* read — DSSH will fail at handshake with "auth failed" if
+> you skip `-m PEM`.
 
 ```bash
-# 1. Generate a 3DS-only RSA key on your PC
-ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa_3ds -C "3ds-ssh-client"
+# 1. Generate a 3DS-only RSA key on your PC.  -m PEM forces the
+#    traditional PEM format so the on-3DS mbedtls can parse it.
+ssh-keygen -t rsa -b 4096 -m PEM -f ~/.ssh/id_rsa_3ds -C "3ds-ssh-client"
 
 # 2. Copy the public half into the server's authorized_keys
 ssh-copy-id -i ~/.ssh/id_rsa_3ds.pub user@your-server.example.com
@@ -137,6 +146,17 @@ ssh-copy-id -i ~/.ssh/id_rsa_3ds.pub user@your-server.example.com
 # 3. Verify the new RSA key works from your PC
 ssh -i ~/.ssh/id_rsa_3ds user@your-server.example.com 'echo OK'
 ```
+
+**Already have an OpenSSH-format key?**  Convert it in place — no
+need to re-add it to the server (the public half is unchanged):
+
+```bash
+ssh-keygen -p -m PEM -f ~/.ssh/id_rsa_3ds
+# enter old passphrase (empty if none) and accept any new passphrase.
+# The file's first line should now read: -----BEGIN RSA PRIVATE KEY-----
+```
+
+You can sanity-check the format with `head -1 ~/.ssh/id_rsa_3ds`.
 
 **Recommended hardening**: prepend the new line in the server's
 `~/.ssh/authorized_keys` with `from="<your-home-public-IP>"` so a lost
