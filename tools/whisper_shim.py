@@ -50,7 +50,16 @@ DS_KEY_FILE   = CONFIG_DIR / "deepseek-key"
 SOCK_PATH     = "/tmp/dssh-whisper.sock"
 
 OPENROUTER_AUDIO_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
-OPENROUTER_AUDIO_MODEL = "openai/whisper-large-v3-turbo"
+# Switched from openai/whisper-large-v3-turbo → qwen/qwen3-asr-flash-...
+# in v1.2 because OpenRouter's Whisper turbo provider occasionally
+# rate-limits / blocks requests from certain IP ranges, while the Qwen
+# ASR endpoint has been stable for the same audio.  Same JSON request
+# shape, same {text, usage} response shape — no protocol changes
+# needed.  Qwen also tends to emit better Chinese punctuation
+# ("你好，世界。" vs Whisper's "你好世界,").  Pricing is about 2× higher
+# but still negligible at personal-use volumes.  Pin the dated snapshot
+# because OpenRouter doesn't expose an unpinned alias.
+OPENROUTER_AUDIO_MODEL = "qwen/qwen3-asr-flash-2026-02-10"
 AUDIO_LANG = "zh"
 AUDIO_TIMEOUT_SEC = 30
 

@@ -459,6 +459,14 @@ const char *softkb_touch(softkb_t *kb,
             kb->repeat_idx = -2;
             return NULL;
         case KIND_SEQ:
+            /* Shift + Tab = "cursor backward tabulation" (CSI Z) — the
+             * terminal-standard escape for shift-tab.  Catches the
+             * common case (only seq we currently bind is "\t"); other
+             * KIND_SEQ keys pass through verbatim. */
+            if (keyboard_shift_held(kbd) && k->seq
+                && k->seq[0] == '\t' && k->seq[1] == '\0') {
+                return "\x1b[Z";
+            }
             return k->seq;
         case KIND_SPACE:
             /* In CN mode with an active pinyin buffer, space commits
