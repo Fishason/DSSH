@@ -27,6 +27,11 @@ typedef enum {
     VOICE_IDLE = 0,
     VOICE_RECORDING,
     VOICE_TRANSCRIBING,
+    /* Non-AI transcription received; the reply text is being streamed
+     * back to the SSH shell one UTF-8 character at a time (typewriter
+     * effect) rather than dumped all at once.  Per-char delay scales
+     * inversely with total length so long utterances don't crawl. */
+    VOICE_TYPING,
     /* M12: AI-ask modal is showing.  voice_state_frame() drives the
      * 0.5 s fade-in and the modal renderer.  Stays in this state until
      * voice_ai_close_keep() (A) or voice_ai_close_clear() (B / touch). */
@@ -78,6 +83,12 @@ int           voice_state_frame(const voice_t *v);
  * status slot, or NULL when IDLE (caller falls back to keyboard's
  * modifier label). */
 const char *voice_status_label(const voice_t *v);
+
+/* True iff the typewriter streamed at least one glyph since the last
+ * call to this function (latches + clears).  main.c uses it to kick the
+ * mascot's typing pose in sync with voice TYPING output, which bypasses
+ * send_to_ssh (voice.c talks to ssh_write directly). */
+int voice_consume_typed(voice_t *v);
 
 /* Background tint for the status slot during voice activity (RGBA);
  * 0 = no tint (use the caller's default). */
