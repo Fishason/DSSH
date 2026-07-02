@@ -6,6 +6,9 @@
  *     (L=Shift, Y=Ctrl, X=Alt — see source/keyboard.c).  No more
  *     SELECT-driven sticky-Ctrl state machine.
  *   - SELECT now emits Esc, R now toggles IME mode (EN ↔ CN).
+ *     SELECT is overloaded: when the SSH session is dead (hard disconnect
+ *     after lid-close sleep), pressing SELECT reconnects instead of emit-
+ *     ting Esc — so the user can recover without exiting DSSH (M13).
  *   - Bottom screen is the full custom soft keyboard (source/softkb.c)
  *     — no more system swkbd applet popup.  X key is for Alt now.
  *   - Touch screen drives the soft keyboard.  Tapped letter goes through
@@ -115,6 +118,36 @@ static void send_to_ssh(ssh_client_t *ssh, terminal_t *term,
     if (term && term->sb_offset != 0) terminal_scroll_view(term, -term->sb_offset);
     ssh_write(ssh, bytes, n);
     g_last_tx_at = time(NULL);
+}
+
+/* Establish (or re-establish) the SSH session using the loaded config.
+ * Used both for the initial connect at startup and for the SELECT-key
+ * reconnect after a hard disconnect (lid-close sleep kills the TCP).
+ * On success: returns a new ssh_client_t, sizes the PTY, writes the
+ * green "connected." banner + a status string.  On failure: returns
+ * NULL, writes the red SSH-error banner + the diagnostic in err. */
+static ssh_client_t *reconnect_ssh(const ssh_config_t *cfg,
+                                   terminal_t *term,
+                                   char *status_buf, int status_sz,
+                                   char *err, int err_sz) {
+    ssh_client_t *ssh = ssh_connect_pubkey(
+        cfg->host, cfg->port, cfg->user,
+        cfg->key_path, NULL,
+        cfg->passphrase[0] ? cfg->passphrase : NULL,
+        err, err_sz);
+
+    if (!ssh) {
+        char line[256];
+        snprintf(line, sizeof(line), "\x1b[31mSSH error:\x1b[0m %s\r\n", err);
+        terminal_write(term, line);
+        snprintf(status_buf, status_sz, "ssh err");
+        return NULL;
+    }
+
+    terminal_write(term, "\x1b[32mconnected.\x1b[0m\r\n");
+    ssh_set_pty_size(ssh, R_TOP_COLS, R_TOP_ROWS);
+    snprintf(status_buf, status_sz, "connected %s:%d", cfg->host, cfg->port);
+    return ssh;
 }
 
 int main(int argc, char *argv[]) {
@@ -234,25 +267,9 @@ int main(int argc, char *argv[]) {
         C3D_FrameEnd(0);
     }
 
-    ssh = ssh_connect_pubkey(
-        cfg.host, cfg.port, cfg.user,
-        cfg.key_path, NULL,
-        cfg.passphrase[0] ? cfg.passphrase : NULL,
-        err, sizeof(err));
-
-    if (!ssh) {
-        char line[256];
-        snprintf(line, sizeof(line), "\x1b[31mSSH error:\x1b[0m %s\r\n", err);
-        terminal_write(term, line);
-        snprintf(status_buf, sizeof(status_buf), "ssh err");
-        status_color = COLOR_ERR;
-    } else {
-        terminal_write(term, "\x1b[32mconnected.\x1b[0m\r\n");
-        ssh_set_pty_size(ssh, R_TOP_COLS, R_TOP_ROWS);
-        snprintf(status_buf, sizeof(status_buf), "connected %s:%d",
-                 cfg.host, cfg.port);
-        status_color = COLOR_OK;
-    }
+    ssh = reconnect_ssh(&cfg, term, status_buf, sizeof(status_buf),
+                        err, sizeof(err));
+    status_color = ssh ? COLOR_OK : COLOR_ERR;
 
 idle_loop:
     {
@@ -333,11 +350,18 @@ idle_loop:
                     feed_terminal(term, rbuf, n);
                     last_rx_at = time(NULL);
                 } else if (n < 0) {
-                    /* Hard disconnect — silent.  Mascot raises ✕ via
-                     * the ssh_dead flag below; no terminal banner. */
+                    /* Hard disconnect.  Tear down the session, mark it
+                     * dead so the mascot raises ✕, and show a one-shot
+                     * red banner telling the user the connection broke
+                     * and how to recover (SELECT reconnect).  This only
+                     * fires on the 0→1 transition of ssh_dead, so it
+                     * won't spam the terminal every frame. */
                     ssh_disconnect(ssh);
                     ssh = NULL;
                     ssh_dead = 1;
+                    terminal_write(term,
+                        "\r\n\x1b[31mConnection lost\r\n\x1b[0m"
+                        "\x1b[33mPress SELECT to reconnect\r\n\x1b[0m");
                 }
             }
 
@@ -353,6 +377,37 @@ idle_loop:
                 mascot_set_alert(mc, stall_alert);
             }
 
+            /* ── SELECT reconnect (only when the session is dead) ──
+             * A hard disconnect (lid-close sleep) leaves ssh_dead=1.
+             * Pressing SELECT here reuses the loaded config to open a
+             * fresh session, so the user recovers without relaunching.
+             * While connected, SELECT falls through to keyboard_handle_input
+             * as Esc (see the input_down mask below).
+             *
+             * select_consumed records that THIS frame's SELECT triggered
+             * a reconnect.  It can't be derived from ssh_dead because a
+             * successful reconnect clears ssh_dead to 0 in this same
+             * frame — without an independent flag, that just-used SELECT
+             * would slip through to keyboard_handle_input as a stray Esc
+             * into the freshly opened session. */
+            int select_consumed = 0;
+            if (ssh_dead && !modal_open && (down & KEY_SELECT)) {
+                select_consumed = 1;
+                terminal_write(term, "\x1b[33mreconnecting...\x1b[0m\r\n");
+                ssh = reconnect_ssh(&cfg, term, status_buf, sizeof(status_buf),
+                                    err, sizeof(err));
+                if (ssh) {
+                    ssh_dead    = 0;
+                    stall_alert = 0;
+                    mascot_set_alert(mc, 0);
+                    last_rx_at  = time(NULL);
+                    g_last_tx_at = last_rx_at;
+                } else {
+                    terminal_write(term,
+                        "\x1b[31mreconnect failed; press SELECT to retry.\x1b[0m\r\n");
+                }
+            }
+
             /* ── Physical keys (Esc / Enter / BS / D-pad / R / scroll) ──
              * When the AI-ask modal is showing (or animating), suppress
              * the keyboard handler entirely so A=close-keep doesn't
@@ -362,6 +417,9 @@ idle_loop:
              * modifier release detection coherent for the post-modal
              * world) but registers no edge events. */
             u32 input_down = modal_open ? 0u : down;
+            /* Mask SELECT when the session is dead or was just consumed by
+             * the reconnect above, so it isn't emitted as Esc. */
+            if (ssh_dead || select_consumed) input_down &= ~KEY_SELECT;
             const char *out = keyboard_handle_input(kbd, term, input_down, held, cpad.dy);
             if (out && !modal_open) send_to_ssh(ssh, term, out, (int)strlen(out));
 
