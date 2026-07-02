@@ -29,6 +29,12 @@ typedef enum {
     STATE_IDLE,
     STATE_FLEE,
     STATE_ALERT,
+    STATE_LOOKUP,   /* reconnecting: look up + "..." dots */
+    STATE_HAPPY,    /* reconnect succeeded: hop + green ✓ */
+    STATE_SAD,      /* reconnect failed: shiver + red ! */
+    STATE_RECORD,   /* voice recording: mic + bob to beat */
+    STATE_THINK,    /* voice transcribing: thinking pose + "?" */
+    STATE_TYPE,     /* typing: claw-tap as if on a keyboard */
 } mascot_state_t;
 
 struct mascot_t {
@@ -42,6 +48,12 @@ struct mascot_t {
     int   anim_timer;
     int   bob_phase;
     int   alert_phase;
+    int   dot_phase;      /* LOOKUP: cycles the "..." dots */
+    int   hop_dy;         /* HAPPY: vertical hop offset */
+    int   shiver_phase;   /* SAD: shiver tick */
+    int   rec_bob;        /* RECORD: beat-bob offset */
+    int   think_phase;    /* THINK: "?" sway */
+    int   type_phase;     /* TYPE: claw-tap cycle (0..11) */
 };
 
 #define CRAB_W   18
@@ -97,6 +109,48 @@ static const char *const alert_x[5] = {
     "@...@",
 };
 
+/* 5×5 green ✓ for HAPPY. */
+static const char *const happy_check[5] = {
+    "....@",
+    "...@.",
+    "@.@..",
+    ".@...",
+    "@....",
+};
+
+/* 3×5 red ! for SAD. */
+static const char *const sad_bang[5] = {
+    "@@.",
+    "@@.",
+    "@@.",
+    "...",
+    "@@.",
+};
+
+/* 5×6 mic for RECORD (capsule head + stem + little base). */
+static const char *const mic_icon[6] = {
+    ".@@@.",
+    "@@@@@",
+    "@@@@@",
+    ".@@@.",
+    "..@..",
+    ".@@@.",
+};
+
+/* 5×5 blue ? for THINK. */
+static const char *const think_q[5] = {
+    ".@@@.",
+    "@...@",
+    "..@@.",
+    "..@..",
+    "..@..",
+};
+
+#define COL_CHECK 0x40b061ff   /* green */
+#define COL_MIC   0xe0c06cff   /* warm gold */
+#define COL_Q     0x6fa8dcff   /* soft blue */
+#define COL_BANG  0xe54040ff   /* red (same hue as ✕) */
+
 static u32 rgba_to_c2d(uint32_t rgba) {
     return C2D_Color32((rgba >> 24) & 0xff,
                        (rgba >> 16) & 0xff,
@@ -115,6 +169,54 @@ static void enter_idle(mascot_t *m) {
 static void enter_flee(mascot_t *m) {
     m->state = STATE_FLEE;
     m->state_frames = 50 + (rand() % 30);
+}
+static void enter_lookup(mascot_t *m) {
+    m->prev_state  = m->state;
+    m->state       = STATE_LOOKUP;
+    m->dot_phase   = 0;
+    m->state_frames = 0;
+}
+static void enter_happy(mascot_t *m) {
+    m->prev_state   = m->state;
+    m->state        = STATE_HAPPY;
+    m->hop_dy       = 0;
+    m->state_frames = 1;
+}
+static void enter_sad(mascot_t *m) {
+    m->prev_state   = m->state;
+    m->state        = STATE_SAD;
+    m->shiver_phase = 0;
+    m->state_frames = 1;
+}
+static void enter_record(mascot_t *m) {
+    m->prev_state  = m->state;
+    m->state       = STATE_RECORD;
+    m->rec_bob     = 0;
+    m->state_frames = 0;
+}
+static void enter_think(mascot_t *m) {
+    m->prev_state   = m->state;
+    m->state        = STATE_THINK;
+    m->think_phase  = 0;
+    m->state_frames = 0;
+}
+
+#define TYPE_TIMEOUT_FRAMES 18   /* ~300 ms at 60 fps */
+
+static void enter_type(mascot_t *m) {
+    /* Don't interrupt the higher-priority status poses. */
+    if (m->state == STATE_ALERT || m->state == STATE_LOOKUP ||
+        m->state == STATE_HAPPY || m->state == STATE_SAD) return;
+    /* Only reset the dot-cycle phase when freshly entering TYPE.  If the
+     * crab is already typing, leave type_phase running so the "." → "..."
+     * growth animation completes instead of restarting on every keystroke
+     * (which would freeze it at the first dot during continuous input). */
+    if (m->state != STATE_TYPE) {
+        m->prev_state = m->state;
+        m->type_phase = 0;
+    }
+    m->state        = STATE_TYPE;
+    m->state_frames = TYPE_TIMEOUT_FRAMES;   /* refresh the auto-expire timer */
 }
 
 mascot_t *mascot_init(int x_min, int x_max, int y) {
@@ -142,6 +244,56 @@ void mascot_set_alert(mascot_t *m, int alert) {
     }
 }
 
+void mascot_set_reconnecting(mascot_t *m, int on) {
+    if (!m) return;
+    if (on && m->state != STATE_LOOKUP) {
+        enter_lookup(m);
+    } else if (!on && m->state == STATE_LOOKUP) {
+        /* Handshake ended; hand back to caller / alert loop.  If the
+         * session was dead when we started looking up, returning to
+         * ALERT keeps the ✕ up until success clears it. */
+        if (m->prev_state == STATE_ALERT) {
+            m->state       = STATE_ALERT;
+            m->alert_phase = 0;
+        } else {
+            enter_walk(m);
+        }
+    }
+}
+
+void mascot_celebrate(mascot_t *m) {
+    if (!m) return;
+    enter_happy(m);
+}
+
+void mascot_sadden(mascot_t *m) {
+    if (!m) return;
+    enter_sad(m);
+}
+
+void mascot_set_recording(mascot_t *m, int on) {
+    if (!m) return;
+    if (on && m->state != STATE_RECORD) {
+        enter_record(m);
+    } else if (!on && m->state == STATE_RECORD) {
+        enter_walk(m);
+    }
+}
+
+void mascot_set_thinking(mascot_t *m, int on) {
+    if (!m) return;
+    if (on && m->state != STATE_THINK) {
+        enter_think(m);
+    } else if (!on && m->state == STATE_THINK) {
+        enter_walk(m);
+    }
+}
+
+void mascot_type_kick(mascot_t *m) {
+    if (!m) return;
+    enter_type(m);
+}
+
 static void clamp_and_bounce(mascot_t *m, int *hit_wall) {
     *hit_wall = 0;
     if (m->fx <= (float)m->x_min) {
@@ -167,8 +319,13 @@ void mascot_update(mascot_t *m) {
             m->anim_frame = (m->anim_frame + 1) & 7;
         }
     }
-    m->bob_phase   = (m->bob_phase + 1) % 60;
-    m->alert_phase = (m->alert_phase + 1) % 24;
+    m->bob_phase     = (m->bob_phase + 1) % 60;
+    m->alert_phase   = (m->alert_phase + 1) % 24;
+    m->dot_phase     = (m->dot_phase + 1) % 36;     /* LOOKUP dot cycle */
+    m->shiver_phase  = (m->shiver_phase + 1) % 8;   /* SAD shiver */
+    m->rec_bob       = (m->rec_bob + 1) % 24;       /* RECORD beat */
+    m->think_phase   = (m->think_phase + 1) % 30;   /* THINK sway */
+    m->type_phase    = (m->type_phase + 1) % 18;    /* TYPE bubble dot cycle */
 
     int hit_wall = 0;
     switch (m->state) {
@@ -192,6 +349,49 @@ void mascot_update(mascot_t *m) {
 
         case STATE_ALERT:
             break;
+
+        case STATE_LOOKUP:
+            /* Frozen in place; the "..." dots animate in draw(). */
+            break;
+
+        case STATE_HAPPY: {
+            /* 40-frame hop (~0.67 s): rise then fall via a parabola,
+             * peak ≈ 5 px up at the midpoint.  Then return to WALK. */
+            int t = m->state_frames;
+            int h = (t < 20) ? t : (40 - t);
+            m->hop_dy = -(h / 4);   /* 0 → -5 → 0 */
+            if (++m->state_frames >= 40) enter_walk(m);
+            break;
+        }
+
+        case STATE_SAD:
+            /* Shiver in place for ~90 frames (~1.5 s), then back to ALERT
+             * so the ✕ (and the dead-session signal) returns. */
+            if (++m->state_frames >= 90) {
+                m->state       = STATE_ALERT;
+                m->alert_phase = 0;
+            }
+            break;
+
+        case STATE_RECORD:
+        case STATE_THINK:
+            /* Held externally; no auto-transition.  Body animation is
+             * driven off rec_bob / think_phase in draw(). */
+            break;
+
+        case STATE_TYPE:
+            /* Auto-expire ~300 ms after the last kick; return to whatever
+             * the crab was doing before typing started (usually WALK). */
+            if (m->state_frames > 0) m->state_frames--;
+            if (m->state_frames == 0) {
+                mascot_state_t p = m->prev_state;
+                /* Don't restore into an obsolete pose; WALK is the safe
+                 * default.  ALERT/etc. are never stored as prev by
+                 * enter_type (it refuses to interrupt them). */
+                enter_walk(m);
+                (void)p;
+            }
+            break;
     }
 }
 
@@ -202,6 +402,19 @@ void mascot_draw(mascot_t *m) {
 
     /* Idle small bob. */
     if (m->state == STATE_IDLE && ((m->bob_phase / 8) & 1)) yi -= 1;
+
+    /* HAPPY hop: whole body rises by hop_dy (≤ 0). */
+    if (m->state == STATE_HAPPY) yi += m->hop_dy;
+
+    /* SAD shiver: jitter ±1 px horizontally. */
+    if (m->state == STATE_SAD) xi += (m->shiver_phase < 4) ? 0 : -1;
+
+    /* RECORD beat-bob: bounce ±1 px in time to a ~5 Hz beat, like the
+     * crab is nodding along to your voice. */
+    if (m->state == STATE_RECORD) yi -= (m->rec_bob < 12) ? 1 : 0;
+
+    /* THINK gentle sway: drift ±1 px horizontally, slower than SAD. */
+    if (m->state == STATE_THINK) xi += (m->think_phase < 15) ? 0 : -1;
 
     /* Sway state — only WALK/FLEE animate; IDLE/ALERT freeze at tilt 0. */
     int tilt = 0;
@@ -247,6 +460,44 @@ void mascot_draw(mascot_t *m) {
                           0.6f, 1, 1, foot_c);
     }
 
+    /* TYPE "typing…" speech bubble: a salmon-pink rounded-rect outline
+     * floats above the crab with a little tail pointing down at it, and
+     * 1-3 dots grow inside in sequence (. → .. → ... → blank → repeat)
+     * to read as "typing".  More legible at 18×11 body scale than a
+     * limb animation. */
+    if (m->state == STATE_TYPE) {
+        u32 c = rgba_to_c2d(COL_BODY);
+        /* Bubble geometry: 11 wide × 7 tall, centered over the body. */
+        const int BW = 11, BH = 7;
+        int bx = xi + (CRAB_W - BW) / 2;
+        int by = yi - BH - 3;   /* 3-px gap above the body */
+        /* Rounded-rect outline (corners left open → reads rounded). */
+        for (int y = 0; y < BH; y++) {
+            for (int x = 0; x < BW; x++) {
+                int edge = (y == 0 || y == BH - 1 || x == 0 || x == BW - 1);
+                int corner = (x < 1 || x > BW - 2) && (y < 1 || y > BH - 2);
+                if (edge && !corner) {
+                    C2D_DrawRectSolid((float)(bx + x), (float)(by + y),
+                                      0.7f, 1, 1, c);
+                }
+            }
+        }
+        /* Tail: two pixels dropping from the bubble's bottom edge toward
+         * the crab's head, offset left of center. */
+        int tx = bx + 3;
+        C2D_DrawRectSolid((float)(tx), (float)(by + BH), 0.7f, 1, 1, c);
+        C2D_DrawRectSolid((float)(tx), (float)(by + BH + 1), 0.7f, 1, 1, c);
+        /* Growing dots: one new dot lights every 5 frames, then a brief
+         * blank pause before the cycle restarts. */
+        int ndots = (m->type_phase < 15) ? (m->type_phase / 5) + 1 : 0;
+        if (ndots > 3) ndots = 3;
+        for (int d = 0; d < ndots; d++) {
+            int dx = bx + 3 + d * 2;   /* dots at x=3,5,7 inside bubble */
+            int dy = by + 3;            /* vertically centered */
+            C2D_DrawRectSolid((float)(dx), (float)(dy), 0.75f, 1, 1, c);
+        }
+    }
+
     /* Red ✕ overlay for ALERT. */
     if (m->state == STATE_ALERT) {
         u32 x_c = rgba_to_c2d(COL_X);
@@ -264,6 +515,99 @@ void mascot_draw(mascot_t *m) {
             }
         }
     }
+
+    /* "..." dots above the head for LOOKUP.  Three dots, each 2×2, spaced
+     * 3 px apart and centered over the body; they brighten in sequence to
+     * read as a loading animation (one new dot lights up every ~0.2 s). */
+    if (m->state == STATE_LOOKUP) {
+        u32 dim = C2D_Color32(0xcc, 0xcc, 0xcc, 0x80);
+        u32 lit = C2D_Color32(0xff, 0xff, 0xff, 0xff);
+        int lit_count = (m->dot_phase / 6) % 4;   /* 0..3 dots */
+        int base_x = xi + (CRAB_W - 10) / 2;       /* center 10-px strip */
+        int base_y = yi - 5;
+        for (int d = 0; d < 3; d++) {
+            u32 c = (d < lit_count) ? lit : dim;
+            int dx = base_x + d * 4;
+            for (int row = 0; row < 2; row++) {
+                for (int col = 0; col < 2; col++) {
+                    C2D_DrawRectSolid((float)(dx + col),
+                                      (float)(base_y + row),
+                                      0.7f, 1, 1, c);
+                }
+            }
+        }
+    }
+
+    /* Green ✓ overlay for HAPPY (static, centered above the hop). */
+    if (m->state == STATE_HAPPY) {
+        u32 c = rgba_to_c2d(COL_CHECK);
+        int cx = xi + (CRAB_W - 5) / 2;
+        int cy = yi - 6;
+        for (int row = 0; row < 5; row++) {
+            const char *src = happy_check[row];
+            for (int col = 0; col < 5; col++) {
+                if (src[col] == '@') {
+                    C2D_DrawRectSolid((float)(cx + col),
+                                      (float)(cy + row),
+                                      0.7f, 1, 1, c);
+                }
+            }
+        }
+    }
+
+    /* Red ! overlay for SAD (sways gently with the shiver). */
+    if (m->state == STATE_SAD) {
+        u32 c = rgba_to_c2d(COL_BANG);
+        int sway = ((m->shiver_phase < 4) ? 0 : -1);
+        int bx = xi + (CRAB_W - 3) / 2 + sway;
+        int by = yi - 7;
+        for (int row = 0; row < 5; row++) {
+            const char *src = sad_bang[row];
+            for (int col = 0; col < 3; col++) {
+                if (src[col] == '@') {
+                    C2D_DrawRectSolid((float)(bx + col),
+                                      (float)(by + row),
+                                      0.7f, 1, 1, c);
+                }
+            }
+        }
+    }
+
+    /* Gold mic overlay for RECORD — held just above the body; a 1-px
+     * arm connects it to the crab so it reads as "held up". */
+    if (m->state == STATE_RECORD) {
+        u32 c = rgba_to_c2d(COL_MIC);
+        int mx = xi + (CRAB_W - 5) / 2;
+        int my = yi - 7;
+        for (int row = 0; row < 6; row++) {
+            const char *src = mic_icon[row];
+            for (int col = 0; col < 5; col++) {
+                if (src[col] == '@') {
+                    C2D_DrawRectSolid((float)(mx + col),
+                                      (float)(my + row),
+                                      0.7f, 1, 1, c);
+                }
+            }
+        }
+    }
+
+    /* Blue ? overlay for THINK (sways gently with the think drift). */
+    if (m->state == STATE_THINK) {
+        u32 c = rgba_to_c2d(COL_Q);
+        int sway = ((m->think_phase < 15) ? 0 : -1);
+        int qx = xi + (CRAB_W - 5) / 2 + sway;
+        int qy = yi - 6;
+        for (int row = 0; row < 5; row++) {
+            const char *src = think_q[row];
+            for (int col = 0; col < 5; col++) {
+                if (src[col] == '@') {
+                    C2D_DrawRectSolid((float)(qx + col),
+                                      (float)(qy + row),
+                                      0.7f, 1, 1, c);
+                }
+            }
+        }
+    }
 }
 
 int mascot_hit_test(const mascot_t *m, int tx, int ty) {
@@ -276,7 +620,12 @@ int mascot_hit_test(const mascot_t *m, int tx, int ty) {
 
 void mascot_on_touched(mascot_t *m, int from_tx) {
     if (!m) return;
-    if (m->state == STATE_ALERT) return;
+    /* Don't flee out of the reconnect- or voice-related states — the
+     * crab is busy signaling and shouldn't run away. */
+    if (m->state == STATE_ALERT || m->state == STATE_LOOKUP ||
+        m->state == STATE_HAPPY || m->state == STATE_SAD  ||
+        m->state == STATE_RECORD || m->state == STATE_THINK ||
+        m->state == STATE_TYPE) return;
     int center = (int)m->fx + CRAB_W / 2;
     m->facing = (from_tx < center) ? +1 : -1;
     enter_flee(m);
