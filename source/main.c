@@ -152,12 +152,16 @@ static void append_startup_tail(char *tail, int cap, int *tail_len,
     tail[*tail_len] = 0;
 }
 
-/* Pump the main interactive PTY until a marker/prompt appears.  Feeding the
- * terminal while waiting is essential for fish: its startup asks CSI 6n and
- * will not finish drawing the prompt until DSSH sends the queued CPR reply. */
-static int wait_for_remote_text(ssh_client_t *ssh, terminal_t *term,
-                                const char *needle, int timeout_ms,
-                                char *capture, int capture_sz) {
+/* Pump the main interactive PTY until either marker/prompt appears. Feeding
+ * the terminal while waiting is essential for fish: its startup asks CSI 6n
+ * and will not finish drawing the prompt until DSSH sends the queued CPR
+ * reply. The alternate marker is optional; a return value of 1 means needle,
+ * 2 means alternate, 0 means timeout, and -1 means SSH disconnected. */
+static int wait_for_remote_text_any(ssh_client_t *ssh, terminal_t *term,
+                                    const char *needle,
+                                    const char *alternate,
+                                    int timeout_ms,
+                                    char *capture, int capture_sz) {
     char raw[READ_BUFSZ];
     char tail[768] = {0};
     int tail_len = 0;
@@ -173,14 +177,51 @@ static int wait_for_remote_text(ssh_client_t *ssh, terminal_t *term,
         append_startup_tail(tail, sizeof(tail), &tail_len, raw, n);
         feed_terminal(term, raw, n);
         flush_terminal_responses(ssh, term);
-        if (strstr(tail, needle)) {
+        char *found = strstr(tail, needle);
+        char *found_alternate = alternate ? strstr(tail, alternate) : NULL;
+        if (found || found_alternate) {
             if (capture && capture_sz > 0)
                 snprintf(capture, (size_t)capture_sz, "%s", tail);
-            return 1;
+            if (!found) return 2;
+            if (!found_alternate) return 1;
+            return found <= found_alternate ? 1 : 2;
         }
     }
     if (capture && capture_sz > 0)
         snprintf(capture, (size_t)capture_sz, "%s", tail);
+    return 0;
+}
+
+static int wait_for_remote_text(ssh_client_t *ssh, terminal_t *term,
+                                const char *needle, int timeout_ms,
+                                char *capture, int capture_sz) {
+    return wait_for_remote_text_any(ssh, term, needle, NULL, timeout_ms,
+                                    capture, capture_sz);
+}
+
+static int parse_keychain_result(const char *capture,
+                                 keychain_report_t *report,
+                                 char *err, int err_sz) {
+    const char *result = strstr(capture, "DSSH_KEYCHAIN_RESULT");
+    if (!result || sscanf(result,
+            "DSSH_KEYCHAIN_RESULT unlock=%d verify=%d",
+            &report->unlock_status, &report->verify_status) != 2) {
+        snprintf(err, (size_t)err_sz, "invalid keychain result marker");
+        return -1;
+    }
+    if (report->unlock_status != 0) {
+        snprintf(err, (size_t)err_sz,
+                 "security unlock-keychain failed (status=%d)",
+                 report->unlock_status);
+        return -1;
+    }
+    if (report->verify_status != 0) {
+        snprintf(err, (size_t)err_sz,
+                 "keychain verification failed (status=%d)",
+                 report->verify_status);
+        return -1;
+    }
+    err[0] = 0;
     return 0;
 }
 
@@ -242,9 +283,17 @@ static int unlock_macos_keychain(ssh_client_t *ssh, terminal_t *term,
         snprintf(err, (size_t)err_sz, "unlock command write failed");
         return -1;
     }
-    rc = wait_for_remote_text(ssh, term, "password to unlock",
-                              KEYCHAIN_PROMPT_TIMEOUT_MS,
-                              NULL, 0);
+    rc = wait_for_remote_text_any(ssh, term, "password to unlock",
+                                  result_marker,
+                                  KEYCHAIN_PROMPT_TIMEOUT_MS,
+                                  capture, sizeof(capture));
+    if (rc == 2) {
+        /* security can fail before it ever asks for a password (for example,
+         * when the keychain path or utility is unavailable). Consume and
+         * report that result immediately instead of waiting for a prompt that
+         * will never arrive. */
+        return parse_keychain_result(capture, report, err, err_sz);
+    }
     if (rc <= 0) {
         if (rc < 0) {
             snprintf(err, (size_t)err_sz,
@@ -279,27 +328,7 @@ static int unlock_macos_keychain(ssh_client_t *ssh, terminal_t *term,
         }
         return -1;
     }
-    char *result = strstr(capture, result_marker);
-    if (!result || sscanf(result,
-            "DSSH_KEYCHAIN_RESULT unlock=%d verify=%d",
-            &report->unlock_status, &report->verify_status) != 2) {
-        snprintf(err, (size_t)err_sz, "invalid keychain result marker");
-        return -1;
-    }
-    if (report->unlock_status != 0) {
-        snprintf(err, (size_t)err_sz,
-                 "security unlock-keychain failed (status=%d)",
-                 report->unlock_status);
-        return -1;
-    }
-    if (report->verify_status != 0) {
-        snprintf(err, (size_t)err_sz,
-                 "keychain verification failed (status=%d)",
-                 report->verify_status);
-        return -1;
-    }
-    err[0] = 0;
-    return 0;
+    return parse_keychain_result(capture, report, err, err_sz);
 }
 
 /* Wall-clock of the last successful ssh_write.  Compared against
