@@ -187,7 +187,7 @@ static int unlock_macos_keychain(ssh_client_t *ssh, terminal_t *term,
                                  keychain_report_t *report,
                                  char *err, int err_sz) {
     static const char ready_command[] =
-        "printf '%s_READY_%s\\n' DSSH SHELL\n";
+        "printf '\\033]777;DSSH_READY_SHELL\\007'\n";
     static const char ready_marker[] = "DSSH_READY_SHELL";
     static const char unlock_command[] =
         "sh -c '/usr/bin/security unlock-keychain "
