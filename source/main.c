@@ -424,7 +424,7 @@ int main(int argc, char *argv[]) {
     {
         char banner[160];
         snprintf(banner, sizeof(banner),
-                 "connecting to \x1b[33m%s@%s:%d\x1b[0m...\r\n",
+                 "connecting to \x1b[33m%.48s@%.64s:%d\x1b[0m...\r\n",
                  cfg.user, cfg.host, cfg.port);
         terminal_write(term, banner);
     }
@@ -461,7 +461,7 @@ int main(int argc, char *argv[]) {
          * the exact same coordinate system as sshd. */
         terminal_reset(term);
         ssh_set_pty_size(ssh, R_TOP_COLS, R_TOP_ROWS);
-        snprintf(status_buf, sizeof(status_buf), "connected %s:%d",
+        snprintf(status_buf, sizeof(status_buf), "connected %.56s:%d",
                  cfg.host, cfg.port);
         status_color = COLOR_OK;
 
@@ -474,6 +474,10 @@ int main(int argc, char *argv[]) {
                 /* Completed commands print FAILED + exit codes themselves.
                  * Only transport/prompt timeouts need a local fallback. */
                 if (report.unlock_status < 0 && report.verify_status < 0) {
+                    /* A prompt/result timeout can leave `security` owning the
+                     * foreground PTY. Abort it before handing control to the
+                     * user so keyboard input reaches the normal shell. */
+                    (void)startup_write_all(ssh, "\x03\n", 2, 2000);
                     char line[320];
                     snprintf(line, sizeof(line),
                         "\x1b[33mkeychain bootstrap failed:\x1b[0m %s\r\n",
