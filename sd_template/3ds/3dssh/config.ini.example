@@ -25,3 +25,14 @@ key_path = sdmc:/3ds/3dssh/id_rsa
 # Passphrase for the key, or leave empty for an unencrypted key.
 # (Recommended: unencrypted, since the SD card is the only place the key lives.)
 passphrase =
+
+# Optional: automatically unlock the current SSH user's macOS login keychain.
+# Leave empty to disable it.
+# The password is sent only after the interactive PTY shows its unlock prompt;
+# it is never placed in a command-line argument or shell history.
+# Quote it if it contains # or leading/trailing spaces, for example:
+#   macos_keychain_password = "my # password"
+#
+# SECURITY WARNING: this stores your macOS login password in plaintext on the
+# removable SD card. Prefer a dedicated macOS account and keep the SD card safe.
+macos_keychain_password =
