@@ -39,6 +39,12 @@
 #define CONFIG_PATH     "sdmc:/3ds/3dssh/config.ini"
 #define READ_BUFSZ      2048
 
+/* Interactive shell startup can be noticeably slower over Tailscale/DERP,
+ * especially when fish/zsh startup hooks perform network or filesystem I/O. */
+#define SHELL_READY_TIMEOUT_MS      60000
+#define KEYCHAIN_PROMPT_TIMEOUT_MS  30000
+#define KEYCHAIN_RESULT_TIMEOUT_MS  30000
+
 #define COLOR_OK        0xa6e3a1ff
 #define COLOR_WARN      0xfab387ff
 #define COLOR_ERR       0xf38ba8ff
@@ -187,7 +193,7 @@ static int unlock_macos_keychain(ssh_client_t *ssh, terminal_t *term,
                                  keychain_report_t *report,
                                  char *err, int err_sz) {
     static const char ready_command[] =
-        "printf '\\033]777;DSSH_READY_SHELL\\007'\n";
+        "printf '\\033]777;%s_READY_%s\\007' DSSH SHELL\n";
     static const char ready_marker[] = "DSSH_READY_SHELL";
     static const char unlock_command[] =
         "sh -c '/usr/bin/security unlock-keychain "
@@ -216,12 +222,18 @@ static int unlock_macos_keychain(ssh_client_t *ssh, terminal_t *term,
         snprintf(err, (size_t)err_sz, "shell readiness probe write failed");
         return -1;
     }
-    int rc = wait_for_remote_text(ssh, term, ready_marker, 15000,
+    int rc = wait_for_remote_text(ssh, term, ready_marker,
+                                  SHELL_READY_TIMEOUT_MS,
                                   NULL, 0);
     if (rc <= 0) {
-        snprintf(err, (size_t)err_sz, rc < 0
-                 ? "SSH disconnected while waiting for shell"
-                 : "shell readiness probe timed out");
+        if (rc < 0) {
+            snprintf(err, (size_t)err_sz,
+                     "SSH disconnected while waiting for shell");
+        } else {
+            snprintf(err, (size_t)err_sz,
+                     "shell readiness probe timed out after %ds",
+                     SHELL_READY_TIMEOUT_MS / 1000);
+        }
         return -1;
     }
 
@@ -230,12 +242,18 @@ static int unlock_macos_keychain(ssh_client_t *ssh, terminal_t *term,
         snprintf(err, (size_t)err_sz, "unlock command write failed");
         return -1;
     }
-    rc = wait_for_remote_text(ssh, term, "password to unlock", 10000,
+    rc = wait_for_remote_text(ssh, term, "password to unlock",
+                              KEYCHAIN_PROMPT_TIMEOUT_MS,
                               NULL, 0);
     if (rc <= 0) {
-        snprintf(err, (size_t)err_sz, rc < 0
-                 ? "SSH disconnected before keychain password prompt"
-                 : "keychain password prompt timed out");
+        if (rc < 0) {
+            snprintf(err, (size_t)err_sz,
+                     "SSH disconnected before keychain password prompt");
+        } else {
+            snprintf(err, (size_t)err_sz,
+                     "keychain password prompt timed out after %ds",
+                     KEYCHAIN_PROMPT_TIMEOUT_MS / 1000);
+        }
         return -1;
     }
 
@@ -247,12 +265,18 @@ static int unlock_macos_keychain(ssh_client_t *ssh, terminal_t *term,
         return -1;
     }
 
-    rc = wait_for_remote_text(ssh, term, result_marker, 15000,
+    rc = wait_for_remote_text(ssh, term, result_marker,
+                              KEYCHAIN_RESULT_TIMEOUT_MS,
                               capture, sizeof(capture));
     if (rc <= 0) {
-        snprintf(err, (size_t)err_sz, rc < 0
-                 ? "SSH disconnected during keychain verification"
-                 : "keychain result timed out");
+        if (rc < 0) {
+            snprintf(err, (size_t)err_sz,
+                     "SSH disconnected during keychain verification");
+        } else {
+            snprintf(err, (size_t)err_sz,
+                     "keychain result timed out after %ds",
+                     KEYCHAIN_RESULT_TIMEOUT_MS / 1000);
+        }
         return -1;
     }
     char *result = strstr(capture, result_marker);
