@@ -76,6 +76,14 @@ int main(void) {
     CHECK(term->cur_flags == fish_flags,
           "xterm modifyOtherKeys must not be parsed as SGR");
 
+    /* Startup synchronization markers travel inside OSC so the raw SSH
+     * bootstrap can detect them without leaking READY text onto the screen. */
+    terminal_write(term, "\x1b]777;DSSH_READY_SHELL\x07");
+    CHECK(term->cur_x == fish_x && term->cur_y == fish_y,
+          "OSC readiness marker must not move the cursor");
+    CHECK(cell_char(term, fish_x, fish_y) == ' ',
+          "OSC readiness marker must not render visible text");
+
     terminal_write(term, "\x1b[s\x1b[1;1H\x1b[u");
     CHECK(term->cur_x == fish_x && term->cur_y == fish_y,
           "parameterless CSI s/u should still save and restore cursor");
