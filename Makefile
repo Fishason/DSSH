@@ -11,6 +11,7 @@ $(error "Please set DEVKITARM. Run via: tools/dkp.sh make")
 endif
 
 TOPDIR ?= $(CURDIR)
+PROJECT_ROOT := $(patsubst %/,%,$(dir $(abspath $(firstword $(MAKEFILE_LIST)))))
 include $(DEVKITARM)/3ds_rules
 
 #---------------------------------------------------------------------------------
@@ -20,6 +21,8 @@ SOURCES		:=	source
 DATA		:=	data
 INCLUDES	:=	include
 ROMFS		:=	romfs
+LIBTS3DS_DIR	:=	$(PROJECT_ROOT)/libts3ds
+LIBTS3DS_A	:=	$(LIBTS3DS_DIR)/build/3ds/libts3ds.a
 
 APP_TITLE	:=	3DS SSH Client
 APP_DESCRIPTION	:=	SSH terminal with Chinese IME
@@ -34,13 +37,24 @@ CFLAGS	:=	-g -Wall -O2 -mword-relocations \
 
 CFLAGS	+=	$(INCLUDE) -D__3DS__
 
+# Diagnostic transport builds set this to auto, direct, peer-relay, or derp.
+# It is compiled into the .3dsx and intentionally cannot be overridden by the
+# SD-card configuration file.
+DSSH_TAILSCALE_PATH ?= auto
+CFLAGS	+=	-DDSSH_TAILSCALE_PATH=\"$(DSSH_TAILSCALE_PATH)\"
+
+# Keep libts3ds/microlink diagnostics out of the user's terminal by default.
+# Set to 1 for a troubleshooting build that shows startup transport logs.
+DSSH_TAILSCALE_VERBOSE ?= 0
+CFLAGS	+=	-DDSSH_TAILSCALE_VERBOSE=$(DSSH_TAILSCALE_VERBOSE)
+
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
 
 ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
 # M3: citro2d/citro3d for top-screen ANSI terminal rendering.
-LIBS	:=	-lssh2 \
+LIBS	:=	-lts3ds -lssh2 \
 			-lmbedtls -lmbedx509 -lmbedcrypto \
 			-lcitro2d -lcitro3d \
 			-lctru -lm
@@ -77,9 +91,11 @@ export HFILES			:=	$(addsuffix .h,$(BINFILES))
 
 export INCLUDE	:=	$(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
 					$(foreach dir,$(LIBDIRS),-I$(dir)/include) \
+					-I$(LIBTS3DS_DIR)/include \
 					-I$(CURDIR)/$(BUILD)
 
-export LIBPATHS	:=	$(foreach dir,$(LIBDIRS),-L$(dir)/lib)
+export LIBPATHS	:=	-L$(LIBTS3DS_DIR)/build/3ds \
+					$(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 
 export _3DSXDEPS	:=	$(if $(NO_SMDH),,$(OUTPUT).smdh)
 
@@ -185,6 +201,12 @@ cia-clean:
 	@rm -rf $(CIA_ASSETS) icon.png $(BUILD)/dssh.smdh $(BUILD)/dssh.bnr $(CIA_TARGET)
 
 $(BUILD):
+	@test -f "$(LIBTS3DS_DIR)/Makefile.3ds" || { \
+		echo "error: libts3ds submodule is missing" >&2; \
+		echo "run: git submodule update --init --recursive" >&2; \
+		exit 1; \
+	}
+	@$(MAKE) --no-print-directory -C $(LIBTS3DS_DIR) -f Makefile.3ds all
 	@mkdir -p $@
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
@@ -200,6 +222,16 @@ DEPENDS	:=	$(OFILES:.o=.d)
 $(OUTPUT).3dsx	:	$(OUTPUT).elf $(_3DSXDEPS)
 $(OFILES_SOURCES) : $(HFILES)
 $(OUTPUT).elf	:	$(OFILES)
+
+$(OUTPUT).elf: $(LIBTS3DS_A)
+
+$(LIBTS3DS_A):
+	@test -f "$(LIBTS3DS_DIR)/Makefile.3ds" || { \
+		echo "error: libts3ds submodule is missing" >&2; \
+		echo "run: git submodule update --init --recursive" >&2; \
+		exit 1; \
+	}
+	@$(MAKE) --no-print-directory -C $(LIBTS3DS_DIR) -f Makefile.3ds all
 
 %.bin.o	%_bin.h :	%.bin
 	@echo $(notdir $<)

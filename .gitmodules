@@ -1,0 +1,3 @@
+[submodule "libts3ds"]
+	path = libts3ds
+	url = https://github.com/cadl/libts3ds.git
