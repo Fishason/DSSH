@@ -191,8 +191,9 @@ static void handle_csi(terminal_t *t, char final, const char *param_str) {
     int params[32] = {0};
     int nparams = 0;
     const char *p = param_str;
-    /* skip leading '?' '>' '!' */
-    char priv_prefix = (*p == '?' || *p == '>' || *p == '!') ? *p : 0;
+    /* CSI prefixes/intermediate bytes used by DEC/xterm/Kitty protocols. */
+    char priv_prefix = (*p == '?' || *p == '>' || *p == '!' ||
+                        *p == '=' || *p == '<') ? *p : 0;
     int priv = priv_prefix != 0;
     if (priv) p++;
     if (*p) {
@@ -298,7 +299,10 @@ static void handle_csi(terminal_t *t, char final, const char *param_str) {
             break;
         }
         /* ── 属性 ── */
-        case 'm': handle_sgr(t, params, nparams); break;
+        case 'm':
+            /* `CSI > 4 ; Ps m` is xterm modifyOtherKeys, not SGR. */
+            if (!priv) handle_sgr(t, params, nparams);
+            break;
         /* ── スクロール領域 ── */
         case 'r':
             t->scroll_top    = (params[0]?params[0]:1)-1;
@@ -311,12 +315,20 @@ static void handle_csi(terminal_t *t, char final, const char *param_str) {
         case 'T': for(int i=0;i<(p1?p1:1);i++) scroll_down_one(t); break;
         /* ── カーソル保存/復元 ── */
         case 's':
-            t->saved_x=t->cur_x; t->saved_y=t->cur_y;
-            t->saved_fg=t->cur_fg; t->saved_bg=t->cur_bg; t->saved_flags=t->cur_flags;
+            if (!priv && !*param_str) {
+                t->saved_x=t->cur_x; t->saved_y=t->cur_y;
+                t->saved_fg=t->cur_fg; t->saved_bg=t->cur_bg; t->saved_flags=t->cur_flags;
+            }
             break;
         case 'u':
-            t->cur_x=t->saved_x; t->cur_y=t->saved_y;
-            t->cur_fg=t->saved_fg; t->cur_bg=t->saved_bg; t->cur_flags=t->saved_flags;
+            /* Fish enables Kitty's keyboard protocol with `CSI = 5 u`.
+             * Only a parameterless CSI u is the ANSI/SCO restore-cursor
+             * command. Treating Kitty's sequence as restore moved fish's
+             * input line to the default saved position at row 1. */
+            if (!priv && !*param_str) {
+                t->cur_x=t->saved_x; t->cur_y=t->saved_y;
+                t->cur_fg=t->saved_fg; t->cur_bg=t->saved_bg; t->cur_flags=t->saved_flags;
+            }
             break;
         /* ── 终端查询回复 ──
          * fish's interactive line editor asks for the cursor position with
