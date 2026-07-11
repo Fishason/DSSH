@@ -105,6 +105,16 @@ static void put_char(terminal_t *t, uint32_t cp) {
     }
 }
 
+static void queue_response(terminal_t *t, const char *s) {
+    int n = (int)strlen(s);
+    int room = TERM_RESPONSE_MAX - t->response_len;
+    if (n > room) n = room;
+    if (n > 0) {
+        memcpy(t->response_buf + t->response_len, s, (size_t)n);
+        t->response_len += n;
+    }
+}
+
 /* ── 256色変換 ── */
 static uint32_t ansi_256_to_rgba(int idx) {
     static const uint32_t ansi16[16] = {
@@ -182,7 +192,8 @@ static void handle_csi(terminal_t *t, char final, const char *param_str) {
     int nparams = 0;
     const char *p = param_str;
     /* skip leading '?' '>' '!' */
-    int priv = (*p == '?' || *p == '>' || *p == '!');
+    char priv_prefix = (*p == '?' || *p == '>' || *p == '!') ? *p : 0;
+    int priv = priv_prefix != 0;
     if (priv) p++;
     if (*p) {
         char tmp[256];
@@ -306,6 +317,27 @@ static void handle_csi(terminal_t *t, char final, const char *param_str) {
         case 'u':
             t->cur_x=t->saved_x; t->cur_y=t->saved_y;
             t->cur_fg=t->saved_fg; t->cur_bg=t->saved_bg; t->cur_flags=t->saved_flags;
+            break;
+        /* ── 终端查询回复 ──
+         * fish's interactive line editor asks for the cursor position with
+         * CSI 6n.  Ignoring it makes fish assume row 1 and repaint every input
+         * line at the top of the screen. */
+        case 'n':
+            if (p1 == 5 && !priv) {
+                queue_response(t, "\x1b[0n");
+            } else if (p1 == 6) {
+                char reply[32];
+                snprintf(reply, sizeof(reply),
+                         priv_prefix == '?' ? "\x1b[?%d;%dR" : "\x1b[%d;%dR",
+                         t->cur_y + 1, t->cur_x + 1);
+                queue_response(t, reply);
+            }
+            break;
+        case 'c':
+            if (priv_prefix == '>')
+                queue_response(t, "\x1b[>0;0;0c"); /* secondary DA */
+            else
+                queue_response(t, "\x1b[?1;2c");  /* VT100 + advanced video */
             break;
         /* ── DEC private モード ── */
         case 'h': case 'l': {
@@ -523,4 +555,15 @@ term_cell_t terminal_get_cell(terminal_t *t, int x, int y) {
         term_cell_t e={0,DEFAULT_FG,DEFAULT_BG,0}; return e;
     }
     return t->cells[y*t->cols+x];
+}
+
+int terminal_take_response(terminal_t *t, char *buf, int len) {
+    if (!t || !buf || len <= 0 || t->response_len <= 0) return 0;
+    int n = t->response_len < len ? t->response_len : len;
+    memcpy(buf, t->response_buf, (size_t)n);
+    t->response_len -= n;
+    if (t->response_len > 0)
+        memmove(t->response_buf, t->response_buf + n,
+                (size_t)t->response_len);
+    return n;
 }

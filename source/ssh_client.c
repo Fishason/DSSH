@@ -73,6 +73,7 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
                                   const char *key_path,
                                   const char *pubkey_path,
                                   const char *passphrase,
+                                  int pty_cols, int pty_rows,
                                   char *err_buf, int err_sz) {
     if (libssh2_init(0) != 0) {
         copy_err(err_buf, err_sz, "libssh2_init failed");
@@ -217,7 +218,11 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
     }
 
     libssh2_channel_setenv(channel, "COLORTERM", "truecolor");
-    int pty_rc = libssh2_channel_request_pty(channel, "xterm-256color");
+    if (pty_cols <= 0) pty_cols = 80;
+    if (pty_rows <= 0) pty_rows = 24;
+    int pty_rc = libssh2_channel_request_pty_ex(
+        channel, "xterm-256color", sizeof("xterm-256color") - 1,
+        NULL, 0, pty_cols, pty_rows, 0, 0);
     if (pty_rc != 0) {
         copy_libssh2_err(err_buf, err_sz, session, "pty", pty_rc);
         libssh2_channel_close(channel);

@@ -10,6 +10,7 @@
  * something long like `cat largefile`; for those cases 500 rows is
  * plenty.  At 80 cols × 12 bytes/cell that's ~480 KB. */
 #define TERM_SCROLLBACK 500
+#define TERM_RESPONSE_MAX 128
 
 typedef struct {
     uint32_t codepoint;
@@ -65,6 +66,12 @@ typedef struct terminal_t {
      * support transparent. */
     int mouse_proto;   /* 0 = off; otherwise 1000/1002/1003 (last set wins) */
     int mouse_sgr;     /* ESC[?1006h: encode as SGR (\x1b[<...M) */
+
+    /* Replies requested by the remote terminal application (for example
+     * CSI 6n cursor-position reports used by fish's line editor).  The main
+     * loop drains this buffer back into the SSH channel after parsing input. */
+    char response_buf[TERM_RESPONSE_MAX];
+    int  response_len;
 } terminal_t;
 
 /* Convenience: true when the server has enabled any mouse tracking mode. */
@@ -79,3 +86,6 @@ void        terminal_write_n(terminal_t *term, const char *data, int len);
 void        terminal_reset(terminal_t *term);
 void        terminal_scroll_view(terminal_t *term, int delta);
 term_cell_t terminal_get_cell(terminal_t *term, int x, int y);
+
+/* Copy and consume queued terminal-protocol replies. Returns bytes copied. */
+int terminal_take_response(terminal_t *term, char *buf, int len);
