@@ -68,6 +68,11 @@ int config_load(ssh_config_t *cfg, const char *path) {
     set_str(cfg->key_path,   "sdmc:/3ds/3dssh/id_rsa");
     cfg->passphrase[0] = 0;
     cfg->macos_keychain_password[0] = 0;
+    cfg->tailscale_auth_key[0] = 0;
+    set_str(cfg->tailscale_hostname, "dssh-3ds");
+    set_str(cfg->tailscale_state, "sdmc:/3ds/3dssh/tailscale.state");
+    set_str(cfg->tailscale_control_url,
+            "https://controlplane.tailscale.com");
 
     FILE *fp = fopen(path, "r");
     if (!fp) return 0;
@@ -92,7 +97,36 @@ int config_load(ssh_config_t *cfg, const char *path) {
         else if (!strcmp(key, "passphrase")) set_str(cfg->passphrase, val);
         else if (!strcmp(key, "macos_keychain_password"))
             set_str(cfg->macos_keychain_password, val);
+        else if (!strcmp(key, "tailscale_auth_key"))
+            set_str(cfg->tailscale_auth_key, val);
+        else if (!strcmp(key, "tailscale_hostname"))
+            set_str(cfg->tailscale_hostname, val);
+        else if (!strcmp(key, "tailscale_state"))
+            set_str(cfg->tailscale_state, val);
+        else if (!strcmp(key, "tailscale_control_url"))
+            set_str(cfg->tailscale_control_url, val);
     }
     fclose(fp);
+
+    /* An explicitly empty optional value has the same meaning as omitting it. */
+    if (!cfg->tailscale_hostname[0])
+        set_str(cfg->tailscale_hostname, "dssh-3ds");
+    if (!cfg->tailscale_state[0])
+        set_str(cfg->tailscale_state,
+                "sdmc:/3ds/3dssh/tailscale.state");
+    if (!cfg->tailscale_control_url[0])
+        set_str(cfg->tailscale_control_url,
+                "https://controlplane.tailscale.com");
+    return 1;
+}
+
+int config_tailscale_should_start(const ssh_config_t *cfg) {
+    if (!cfg) return 0;
+    if (cfg->tailscale_auth_key[0]) return 1;
+    if (!cfg->tailscale_state[0]) return 0;
+
+    FILE *state = fopen(cfg->tailscale_state, "rb");
+    if (!state) return 0;
+    fclose(state);
     return 1;
 }
