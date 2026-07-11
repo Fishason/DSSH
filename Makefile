@@ -104,7 +104,7 @@ ifneq ($(ROMFS),)
 	export _3DSXFLAGS += --romfs=$(CURDIR)/$(ROMFS)
 endif
 
-.PHONY: $(BUILD) clean all ime-dict test-ime cia cia-tools cia-clean
+.PHONY: $(BUILD) clean all ime-dict test-ime test-config test-terminal cia cia-tools cia-clean
 
 all: $(BUILD)
 
@@ -117,6 +117,14 @@ ime-dict:
 # Host-side smoke test for the IME engine — much faster than 3dslink.
 test-ime:
 	@bash tools/test_ime.sh
+
+# Host-side config parser tests (including quoted keychain passwords).
+test-config:
+	@bash tools/test_config.sh
+
+# Host-side terminal protocol tests (scrolling + fish cursor queries).
+test-terminal:
+	@bash tools/test_terminal.sh
 
 # ── M9: CIA packaging ───────────────────────────────────────────────
 #
