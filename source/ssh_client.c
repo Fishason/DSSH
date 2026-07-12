@@ -30,6 +30,16 @@ typedef struct ssh_transport {
     int blocking;
 } ssh_transport;
 
+/* libssh2's blocking flag alone is insufficient for callback transports:
+ * its socket wait path cannot advance libts3ds. Keep both layers in the same
+ * mode so the callbacks poll Tailscale while synchronous SSH operations wait. */
+static void ssh_set_io_blocking(ssh_client_t *ssh, int blocking) {
+    if (!ssh || !ssh->session) return;
+    ssh_transport *transport = (ssh_transport *)ssh->transport;
+    if (transport) transport->blocking = blocking ? 1 : 0;
+    libssh2_session_set_blocking(ssh->session, blocking ? 1 : 0);
+}
+
 static ssize_t tailscale_send_cb(libssh2_socket_t socket,
                                  const void *buffer, size_t length, int flags,
                                  void **abstract) {
@@ -433,28 +443,26 @@ ssh_aux_channel_t *ssh_aux_exec(ssh_client_t *ssh, const char *cmd,
                                 char *err_buf, int err_sz) {
     if (!ssh || !ssh->connected || !ssh->session || !cmd) return NULL;
 
-    /* Briefly flip session to blocking mode so open + exec round-trip
-     * inline.  This stalls the main loop for ~one TCP RTT (~50-200 ms),
-     * which is invisible alongside the multi-second voice transcription
-     * we're about to wait for.  An async open would be cleaner but adds
-     * substantial state-machine code for no perceptible UX gain. */
-    libssh2_session_set_blocking(ssh->session, 1);
+    /* Briefly flip both libssh2 and its optional callback transport to
+     * blocking mode so open + exec can complete inline. This stalls the main
+     * loop for roughly one RTT, which is invisible beside transcription. */
+    ssh_set_io_blocking(ssh, 1);
 
     LIBSSH2_CHANNEL *ch = libssh2_channel_open_session(ssh->session);
     if (!ch) {
         copy_libssh2_err(err_buf, err_sz, ssh->session, "aux open_session", 0);
-        libssh2_session_set_blocking(ssh->session, 0);
+        ssh_set_io_blocking(ssh, 0);
         return NULL;
     }
     int rc = libssh2_channel_exec(ch, cmd);
     if (rc != 0) {
         copy_libssh2_err(err_buf, err_sz, ssh->session, "aux exec", rc);
+        ssh_set_io_blocking(ssh, 0);
         libssh2_channel_free(ch);
-        libssh2_session_set_blocking(ssh->session, 0);
         return NULL;
     }
 
-    libssh2_session_set_blocking(ssh->session, 0);
+    ssh_set_io_blocking(ssh, 0);
 
     ssh_aux_channel_t *a = calloc(1, sizeof(*a));
     if (!a) {
