@@ -24,6 +24,7 @@
 
 #include "ssh_client.h"
 #include "config.h"
+#include "keychain_protocol.h"
 #include "terminal.h"
 #include "renderer.h"
 #include "keyboard.h"
@@ -248,7 +249,7 @@ static int unlock_macos_keychain(ssh_client_t *ssh, terminal_t *term,
         "if [ \"$u\" -ne 0 ] || [ \"$v\" -ne 0 ]; then "
         "printf \"[keychain] unlock failed (unlock=%d verify=%d)\\n\" "
         "\"$u\" \"$v\"; fi'\n";
-    static const char result_marker[] = "DSSH_KEYCHAIN_RESULT";
+    static const char result_marker[] = DSSH_KEYCHAIN_RESULT_MARKER;
     char capture[768];
 
     report->unlock_status = -1;

@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "../source/keychain_protocol.h"
 #include "../source/terminal.h"
 
 /* terminal.c only needs this one font-atlas query.  Protocol tests use ASCII. */
@@ -83,6 +84,17 @@ int main(void) {
           "OSC readiness marker must not move the cursor");
     CHECK(cell_char(term, fish_x, fish_y) == ' ',
           "OSC readiness marker must not render visible text");
+
+    /* An interactive shell echoes the printable command before security asks
+     * for a password. Only the emitted ESC-prefixed OSC is a result marker. */
+    const char echoed_result[] =
+        "printf \"\\033]777;DSSH_KEYCHAIN_RESULT unlock=%d verify=%d\"";
+    const char emitted_result[] =
+        DSSH_KEYCHAIN_RESULT_MARKER " unlock=0 verify=0\x07";
+    CHECK(strstr(echoed_result, DSSH_KEYCHAIN_RESULT_MARKER) == NULL,
+          "echoed keychain command must not look like a result marker");
+    CHECK(strstr(emitted_result, DSSH_KEYCHAIN_RESULT_MARKER) == emitted_result,
+          "emitted keychain OSC must match the result marker");
 
     terminal_write(term, "\x1b[s\x1b[1;1H\x1b[u");
     CHECK(term->cur_x == fish_x && term->cur_y == fish_y,
