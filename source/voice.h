@@ -37,6 +37,9 @@ typedef enum {
 voice_t *voice_init(void);
 void     voice_free(voice_t *v);
 
+/* Cancel recording/transcription before its SSH transport is destroyed. */
+void voice_abort(voice_t *v);
+
 /* Triggered by physical KEY_START.
  *   IDLE         → RECORDING
  *   RECORDING    → TRANSCRIBING (or IDLE if too short)

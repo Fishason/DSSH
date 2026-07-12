@@ -460,6 +460,14 @@ void voice_free(voice_t *v) {
     free(v);
 }
 
+void voice_abort(voice_t *v) {
+    if (!v) return;
+    if (v->mic_active) stop_mic_capture(v);
+    release_aux(v);
+    v->reply_len = 0;
+    enter_idle(v);
+}
+
 void voice_toggle(voice_t *v, ssh_client_t *ssh) {
     if (!v || !ssh) return;
     switch (v->state) {

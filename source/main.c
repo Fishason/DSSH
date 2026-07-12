@@ -825,6 +825,7 @@ idle_loop:
                 } else if (n < 0) {
                     /* Hard disconnect — silent.  Mascot raises ✕ via
                      * the ssh_dead flag below; no terminal banner. */
+                    voice_abort(voice);
                     ssh_disconnect(ssh);
                     ssh = NULL;
                     ssh_dead = 1;
