@@ -496,11 +496,41 @@ int main(int argc, char *argv[]) {
         status_color = COLOR_OK;
 
         if (cfg.macos_keychain_password[0]) {
+            /* Keep this local-only progress line visible while bootstrap
+             * blocks, then reset again so fish CPR uses remote coordinates. */
+            terminal_write(term,
+                "\x1b[36mUnlocking macOS keychain...\x1b[0m\r\n");
+            C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+            C2D_TargetClear(top, C2D_Color32(0x1a, 0x1b, 0x26, 0xff));
+            C2D_SceneBegin(top);
+            renderer_draw_terminal(r, term);
+            C2D_TargetClear(bot, C2D_Color32(0x18, 0x18, 0x25, 0xff));
+            C2D_SceneBegin(bot);
+            softkb_draw(kb, r, kbd);
+            C3D_FrameEnd(0);
+            terminal_reset(term);
+
             keychain_report_t report = { -1, -1 };
-            if (unlock_macos_keychain(ssh, term, cfg.macos_keychain_password,
-                                      &report, err, sizeof(err)) == 0) {
-                /* The remote wrapper clears bootstrap output on success. */
-            } else {
+            int unlock_rc = unlock_macos_keychain(
+                ssh, term, cfg.macos_keychain_password,
+                &report, err, sizeof(err));
+
+            /* ssh_read()/ssh_write() clear the connected flag on a hard
+             * error. Do not leave a non-NULL but unusable session in the
+             * idle loop. */
+            if (!ssh_is_connected(ssh)) {
+                if (unlock_rc == 0)
+                    snprintf(err, sizeof(err),
+                             "SSH disconnected during keychain bootstrap");
+                char line[320];
+                snprintf(line, sizeof(line),
+                         "\x1b[31mSSH error:\x1b[0m %s\r\n", err);
+                terminal_write(term, line);
+                snprintf(status_buf, sizeof(status_buf), "ssh err");
+                status_color = COLOR_ERR;
+                ssh_disconnect(ssh);
+                ssh = NULL;
+            } else if (unlock_rc != 0) {
                 /* Completed commands print FAILED + exit codes themselves.
                  * Only transport/prompt timeouts need a local fallback. */
                 if (report.unlock_status < 0 && report.verify_status < 0) {
@@ -544,7 +574,7 @@ idle_loop:
         time_t last_rx_at = time(NULL);
         g_last_tx_at      = last_rx_at;
         int    stall_alert = 0;
-        int    ssh_dead    = 0;
+        int    ssh_dead    = ssh ? 0 : 1;
 
         while (aptMainLoop()) {
             hidScanInput();
