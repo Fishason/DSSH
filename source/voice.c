@@ -74,6 +74,17 @@ struct voice_t {
     char          reply_buf[REPLY_BUF_SIZE];
     int           reply_len;
 
+    /* Typewriter streaming (VOICE_TYPING).  type_pos is the byte offset
+     * into reply_buf already sent; type_next_at is the state_frame value
+     * at which the next character goes out.  Per-char delay (frames) is
+     * set by enter_typing() scaling inversely with reply_len. */
+    int           type_pos;
+    int           type_next_at;
+    int           type_delay;
+    int           typed_latch;   /* set when a glyph streamed; cleared by
+                                   voice_consume_typed() so main.c can
+                                   kick the mascot typing pose per glyph. */
+
     /* AI-ask state.  ai_question + ai_answer are filled from the JSON
      * response body after VOICE_TRANSCRIBING completes; ai_history is
      * appended to on close_keep, cleared on close_clear. */
@@ -98,6 +109,46 @@ static void enter_error(voice_t *v, const char *msg) {
     v->state = VOICE_ERROR;
     v->state_frame = 0;
     if (msg) snprintf(v->err_msg, sizeof(v->err_msg), "%s", msg);
+}
+
+/* Length in bytes of the UTF-8 codepoint starting at b (1..4), or 1 for
+ * any invalid/over-long lead so the typewriter never splits a glyph. */
+static int utf8_char_len(const unsigned char *b) {
+    if (b[0] < 0x80)             return 1;
+    if ((b[0] & 0xE0) == 0xC0)   return 2;
+    if ((b[0] & 0xF0) == 0xE0)   return 3;
+    if ((b[0] & 0xF8) == 0xF0)   return 4;
+    return 1;   /* fallback — treat as single byte */
+}
+
+/* Begin streaming reply_buf to the shell one glyph at a time.  Longer
+ * replies get a shorter per-char delay so a full sentence doesn't take
+ * forever: ~5 frames/char under 30 chars, scaling down to ~1 frame/char
+ * for very long replies (~60 fps → 83 ms down to ~17 ms). */
+static void enter_typing(voice_t *v) {
+    v->state       = VOICE_TYPING;
+    v->state_frame = 0;
+    v->type_pos    = 0;
+    v->type_next_at = 0;
+    int n = v->reply_len;
+    int delay;
+    if      (n < 20)  delay = 5;
+    else if (n < 40)  delay = 3;
+    else if (n < 80)  delay = 2;
+    else if (n < 160) delay = 2;
+    else              delay = 1;
+    v->type_delay = delay;
+}
+
+/* Dump any remaining reply_buf in one shot and return to IDLE.  Used when
+ * the user interrupts the typewriter with a second START — they don't lose
+ * the rest of the text, just the gradual reveal. */
+static void flush_typing(voice_t *v, ssh_client_t *ssh) {
+    if (v->type_pos < v->reply_len) {
+        ssh_write(ssh, v->reply_buf + v->type_pos,
+                  v->reply_len - v->type_pos);
+    }
+    enter_idle(v);
 }
 
 static void release_aux(voice_t *v) {
@@ -475,6 +526,10 @@ void voice_toggle(voice_t *v, ssh_client_t *ssh) {
             release_aux(v);
             enter_idle(v);
             break;
+        case VOICE_TYPING:
+            /* Interrupt the typewriter: flush the rest instantly. */
+            flush_typing(v, ssh);
+            break;
         case VOICE_AI_SHOWING:
             /* Plain START while modal up — let the modal stay; the
              * caller (main.c) routes start back to us only when modal
@@ -504,6 +559,11 @@ void voice_ai_toggle(voice_t *v, ssh_client_t *ssh) {
         case VOICE_TRANSCRIBING:
             release_aux(v);
             enter_idle(v);
+            break;
+        case VOICE_TYPING:
+            /* Non-AI reply still streaming; L+START mid-typing just
+             * flushes it and returns to idle (this cycle wasn't AI). */
+            flush_typing(v, ssh);
             break;
         case VOICE_AI_SHOWING:
             /* Modal up — main.c shouldn't route here; defensive ignore. */
@@ -637,11 +697,36 @@ void voice_tick(voice_t *v, ssh_client_t *ssh) {
                         finish_ai_transcribe(v);
                     } else {
                         if (v->reply_len > 0) {
-                            ssh_write(ssh, v->reply_buf, v->reply_len);
+                            /* Release the aux channel but keep reply_buf;
+                             * VOICE_TYPING will stream it out glyph by glyph. */
+                            release_aux(v);
+                            enter_typing(v);
+                        } else {
+                            release_aux(v);
+                            enter_idle(v);
                         }
-                        release_aux(v);
-                        enter_idle(v);
                     }
+                }
+            }
+            break;
+        }
+
+        case VOICE_TYPING: {
+            /* Emit one UTF-8 glyph every type_delay frames until the whole
+             * reply has been streamed, then return to IDLE.  ssh_write on
+             * a whole codepoint keeps multi-byte CJK glyphs intact. */
+            if (v->state_frame >= v->type_next_at) {
+                if (v->type_pos < v->reply_len) {
+                    int clen = utf8_char_len((const unsigned char *)
+                                             (v->reply_buf + v->type_pos));
+                    if (v->type_pos + clen > v->reply_len)
+                        clen = v->reply_len - v->type_pos;
+                    ssh_write(ssh, v->reply_buf + v->type_pos, clen);
+                    v->type_pos    += clen;
+                    v->type_next_at = v->state_frame + v->type_delay;
+                    v->typed_latch  = 1;   /* signal main.c to kick mascot */
+                } else {
+                    enter_idle(v);
                 }
             }
             break;
@@ -689,12 +774,20 @@ const char *voice_status_label(const voice_t *v) {
         case VOICE_RECORDING:
             return v->ai_mode ? "AI?" : "REC";
         case VOICE_TRANSCRIBING:
+        case VOICE_TYPING:
             return spinner_frame(v->state_frame);
         case VOICE_ERROR:
             return "ERR";
         default:
             return NULL;
     }
+}
+
+int voice_consume_typed(voice_t *v) {
+    if (!v) return 0;
+    int was = v->typed_latch;
+    v->typed_latch = 0;
+    return was;
 }
 
 uint32_t voice_status_bg(const voice_t *v) {
