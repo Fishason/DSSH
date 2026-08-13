@@ -271,6 +271,12 @@ static int wait_for_remote_text_any(ssh_client_t *ssh, terminal_t *term,
     u64 deadline = osGetTime() + (u64)timeout_ms;
 
     while (osGetTime() < deadline) {
+        /* The keychain bootstrap runs before the main loop, so the UI is
+         * frozen while we wait (up to 60s if the remote auto-starts tmux,
+         * which swallows the OSC readiness marker).  Give the user a way
+         * out: START aborts the wait and hands the shell over as-is. */
+        hidScanInput();
+        if (hidKeysDown() & KEY_START) return -2;
         /* A Tailscale-backed SSH socket lives in libts3ds's private lwIP
          * stack. It cannot progress while this synchronous bootstrap loop
          * sleeps unless its transport is explicitly pumped. */
@@ -309,8 +315,11 @@ static int wait_for_remote_text(ssh_client_t *ssh, terminal_t *term,
 static int parse_keychain_result(const char *capture,
                                  keychain_report_t *report,
                                  char *err, int err_sz) {
-    const char *result = strstr(capture, "DSSH_KEYCHAIN_RESULT");
-    if (!result || sscanf(result,
+    /* Match the raw OSC form (ESC ] 777 ; ...) — the shell's echo of the
+     * unlock command contains the same words as printable text and would
+     * shadow the real result if we matched the bare marker name. */
+    const char *result = strstr(capture, DSSH_KEYCHAIN_RESULT_MARKER);
+    if (!result || sscanf(result + 6, /* skip ESC ] 7 7 7 ; */
             "DSSH_KEYCHAIN_RESULT unlock=%d verify=%d",
             &report->unlock_status, &report->verify_status) != 2) {
         snprintf(err, (size_t)err_sz, "invalid keychain result marker");
@@ -374,7 +383,10 @@ static int unlock_macos_keychain(ssh_client_t *ssh, terminal_t *term,
                                   SHELL_READY_TIMEOUT_MS,
                                   NULL, 0);
     if (rc <= 0) {
-        if (rc < 0) {
+        if (rc == -2) {
+            snprintf(err, (size_t)err_sz,
+                     "keychain bootstrap aborted (START)");
+        } else if (rc < 0) {
             snprintf(err, (size_t)err_sz,
                      "SSH disconnected while waiting for shell");
         } else {
@@ -402,7 +414,10 @@ static int unlock_macos_keychain(ssh_client_t *ssh, terminal_t *term,
         return parse_keychain_result(capture, report, err, err_sz);
     }
     if (rc <= 0) {
-        if (rc < 0) {
+        if (rc == -2) {
+            snprintf(err, (size_t)err_sz,
+                     "keychain bootstrap aborted (START)");
+        } else if (rc < 0) {
             snprintf(err, (size_t)err_sz,
                      "SSH disconnected before keychain password prompt");
         } else {
@@ -425,7 +440,10 @@ static int unlock_macos_keychain(ssh_client_t *ssh, terminal_t *term,
                               KEYCHAIN_RESULT_TIMEOUT_MS,
                               capture, sizeof(capture));
     if (rc <= 0) {
-        if (rc < 0) {
+        if (rc == -2) {
+            snprintf(err, (size_t)err_sz,
+                     "keychain bootstrap aborted (START)");
+        } else if (rc < 0) {
             snprintf(err, (size_t)err_sz,
                      "SSH disconnected during keychain verification");
         } else {
@@ -463,6 +481,63 @@ static void render_connecting_frame(C3D_RenderTarget *top,
     C2D_SceneBegin(bot);
     softkb_draw(keyboard, renderer, physical_keyboard);
     C3D_FrameEnd(0);
+}
+
+/* Run the macOS keychain bootstrap on a freshly connected session, if a
+ * keychain password is configured (no-op otherwise).  Shared between the
+ * initial connect and the SELECT-key reconnect, so a reconnected macOS
+ * session gets its keychain unlocked again.  Returns the session pointer,
+ * or NULL if a hard disconnect during bootstrap tore the session down. */
+static ssh_client_t *keychain_bootstrap(ssh_client_t *ssh,
+                                        const ssh_config_t *cfg,
+                                        terminal_t *term, renderer_t *r,
+                                        softkb_t *kb, keyboard_t *kbd,
+                                        C3D_RenderTarget *top,
+                                        C3D_RenderTarget *bot,
+                                        char *status_buf, int status_sz,
+                                        uint32_t *status_color,
+                                        char *err, int err_sz) {
+    if (!ssh || !cfg->macos_keychain_password[0]) return ssh;
+
+    /* Keep this local-only progress line visible while bootstrap blocks,
+     * then reset again so fish CPR uses remote coordinates. */
+    terminal_write(term, "\x1b[36mUnlocking macOS keychain...\x1b[0m\r\n");
+    render_connecting_frame(top, bot, r, term, kb, kbd);
+    terminal_reset(term);
+
+    keychain_report_t report = { -1, -1 };
+    int unlock_rc = unlock_macos_keychain(
+        ssh, term, cfg->macos_keychain_password, &report, err, err_sz);
+
+    /* ssh_read()/ssh_write() clear the connected flag on a hard error.
+     * Do not leave a non-NULL but unusable session in the idle loop. */
+    if (!ssh_is_connected(ssh)) {
+        if (unlock_rc == 0)
+            snprintf(err, (size_t)err_sz,
+                     "SSH disconnected during keychain bootstrap");
+        char line[320];
+        snprintf(line, sizeof(line), "\x1b[31mSSH error:\x1b[0m %s\r\n", err);
+        terminal_write(term, line);
+        snprintf(status_buf, (size_t)status_sz, "ssh err");
+        *status_color = COLOR_ERR;
+        ssh_disconnect(ssh);
+        return NULL;
+    }
+    if (unlock_rc != 0) {
+        /* Completed commands print FAILED + exit codes themselves.
+         * Only transport/prompt timeouts need a local fallback. */
+        if (report.unlock_status < 0 && report.verify_status < 0) {
+            /* A prompt/result timeout can leave `security` owning the
+             * foreground PTY. Abort it before handing control to the
+             * user so keyboard input reaches the normal shell. */
+            (void)startup_write_all(ssh, "\x03\n", 2, 2000);
+            char line[320];
+            snprintf(line, sizeof(line),
+                     "\x1b[33mkeychain bootstrap failed:\x1b[0m %s\r\n", err);
+            terminal_write(term, line);
+        }
+    }
+    return ssh;
 }
 
 /* Snap the local terminal view to the bottom (canceling any user-side
@@ -700,59 +775,9 @@ int main(int argc, char *argv[]) {
     tailscale_debug_flush(&tailscale_debug, term);
     status_color = ssh ? COLOR_OK : COLOR_ERR;
 
-    {
-        if (ssh && cfg.macos_keychain_password[0]) {
-            /* Keep this local-only progress line visible while bootstrap
-             * blocks, then reset again so fish CPR uses remote coordinates. */
-            terminal_write(term,
-                "\x1b[36mUnlocking macOS keychain...\x1b[0m\r\n");
-            C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
-            C2D_TargetClear(top, C2D_Color32(0x1a, 0x1b, 0x26, 0xff));
-            C2D_SceneBegin(top);
-            renderer_draw_terminal(r, term);
-            C2D_TargetClear(bot, C2D_Color32(0x18, 0x18, 0x25, 0xff));
-            C2D_SceneBegin(bot);
-            softkb_draw(kb, r, kbd);
-            C3D_FrameEnd(0);
-            terminal_reset(term);
-
-            keychain_report_t report = { -1, -1 };
-            int unlock_rc = unlock_macos_keychain(
-                ssh, term, cfg.macos_keychain_password,
-                &report, err, sizeof(err));
-
-            /* ssh_read()/ssh_write() clear the connected flag on a hard
-             * error. Do not leave a non-NULL but unusable session in the
-             * idle loop. */
-            if (!ssh_is_connected(ssh)) {
-                if (unlock_rc == 0)
-                    snprintf(err, sizeof(err),
-                             "SSH disconnected during keychain bootstrap");
-                char line[320];
-                snprintf(line, sizeof(line),
-                         "\x1b[31mSSH error:\x1b[0m %s\r\n", err);
-                terminal_write(term, line);
-                snprintf(status_buf, sizeof(status_buf), "ssh err");
-                status_color = COLOR_ERR;
-                ssh_disconnect(ssh);
-                ssh = NULL;
-            } else if (unlock_rc != 0) {
-                /* Completed commands print FAILED + exit codes themselves.
-                 * Only transport/prompt timeouts need a local fallback. */
-                if (report.unlock_status < 0 && report.verify_status < 0) {
-                    /* A prompt/result timeout can leave `security` owning the
-                     * foreground PTY. Abort it before handing control to the
-                     * user so keyboard input reaches the normal shell. */
-                    (void)startup_write_all(ssh, "\x03\n", 2, 2000);
-                    char line[320];
-                    snprintf(line, sizeof(line),
-                        "\x1b[33mkeychain bootstrap failed:\x1b[0m %s\r\n",
-                        err);
-                    terminal_write(term, line);
-                }
-            }
-        }
-    }
+    ssh = keychain_bootstrap(ssh, &cfg, term, r, kb, kbd, top, bot,
+                             status_buf, sizeof(status_buf), &status_color,
+                             err, sizeof(err));
 
     /* NOTE: cfg.passphrase / cfg.macos_keychain_password intentionally stay
      * in memory — the SELECT-key reconnect path re-authenticates with them.
@@ -964,6 +989,13 @@ idle_loop:
                 ssh = reconnect_ssh(&cfg, tailscale, term,
                                     status_buf, sizeof(status_buf),
                                     err, sizeof(err));
+                /* Reconnected to a macOS host: its login keychain locked
+                 * again with the old session — unlock it again so Claude
+                 * Code keeps finding its credentials. */
+                ssh = keychain_bootstrap(ssh, &cfg, term, r, kb, kbd,
+                                         top, bot,
+                                         status_buf, sizeof(status_buf),
+                                         &status_color, err, sizeof(err));
                 mascot_set_reconnecting(mc, 0);
                 if (ssh) {
                     ssh_dead    = 0;
@@ -1074,6 +1106,10 @@ idle_loop:
             C3D_FrameEnd(0);
         }
 
+        /* Release voice's aux channel BEFORE freeing the session —
+         * voice_free → release_aux would otherwise call libssh2_channel_*
+         * on a freed LIBSSH2_SESSION (use-after-free). */
+        voice_abort(voice);
         if (ssh) ssh_disconnect(ssh);
     }
     if (tailscale) {

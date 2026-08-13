@@ -51,6 +51,7 @@ void terminal_reset(terminal_t *t) {
     t->cur_fg = DEFAULT_FG; t->cur_bg = DEFAULT_BG; t->cur_flags = 0;
     t->scroll_top = 0; t->scroll_bottom = t->rows - 1;
     t->cursor_visible = 1;
+    t->response_len = 0;   /* drop queued query replies from the old screen */
     for (int i = 0; i < t->cols * t->rows; i++) cell_reset(&t->cells[i]);
 }
 

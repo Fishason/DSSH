@@ -40,16 +40,26 @@ static void ssh_set_io_blocking(ssh_client_t *ssh, int blocking) {
     libssh2_session_set_blocking(ssh->session, blocking ? 1 : 0);
 }
 
+/* libssh2's callback contract is "-errno", but ts3ds error codes are not
+ * errnos: TS3DS_ERR_INTERNAL (-11) would read as -EAGAIN and turn a hard
+ * transport failure into an infinite silent retry.  Map AGAIN faithfully
+ * and collapse every other error onto -EIO. */
+static ssize_t map_ts3ds_result(ssize_t result) {
+    if (result >= 0) return result;
+    if (result == TS3DS_ERR_AGAIN) return -EAGAIN;
+    return -EIO;
+}
+
 static ssize_t tailscale_send_cb(libssh2_socket_t socket,
                                  const void *buffer, size_t length, int flags,
                                  void **abstract) {
     ssh_transport *transport = abstract ? (ssh_transport *)*abstract : NULL;
     (void)socket; (void)flags;
-    if (!transport || !transport->connection) return -1;
+    if (!transport || !transport->connection) return -EIO;
     for (;;) {
         ssize_t result = ts3ds_conn_write(transport->connection, buffer, length);
         if (result != TS3DS_ERR_AGAIN || !transport->blocking) {
-            return result == TS3DS_ERR_AGAIN ? -EAGAIN : result;
+            return map_ts3ds_result(result);
         }
         ts3ds_poll(transport->tailscale);
         svcSleepThread(1000000);
@@ -60,11 +70,11 @@ static ssize_t tailscale_recv_cb(libssh2_socket_t socket, void *buffer,
                                  size_t length, int flags, void **abstract) {
     ssh_transport *transport = abstract ? (ssh_transport *)*abstract : NULL;
     (void)socket; (void)flags;
-    if (!transport || !transport->connection) return -1;
+    if (!transport || !transport->connection) return -EIO;
     for (;;) {
         ssize_t result = ts3ds_conn_read(transport->connection, buffer, length);
         if (result != TS3DS_ERR_AGAIN || !transport->blocking) {
-            return result == TS3DS_ERR_AGAIN ? -EAGAIN : result;
+            return map_ts3ds_result(result);
         }
         ts3ds_poll(transport->tailscale);
         svcSleepThread(1000000);
@@ -457,20 +467,22 @@ ssh_aux_channel_t *ssh_aux_exec(ssh_client_t *ssh, const char *cmd,
     int rc = libssh2_channel_exec(ch, cmd);
     if (rc != 0) {
         copy_libssh2_err(err_buf, err_sz, ssh->session, "aux exec", rc);
-        ssh_set_io_blocking(ssh, 0);
+        /* Free while still blocking: in nonblocking mode channel_free can
+         * return EAGAIN without freeing, leaking the channel. */
         libssh2_channel_free(ch);
+        ssh_set_io_blocking(ssh, 0);
         return NULL;
     }
-
-    ssh_set_io_blocking(ssh, 0);
 
     ssh_aux_channel_t *a = calloc(1, sizeof(*a));
     if (!a) {
         copy_err(err_buf, err_sz, "aux alloc oom");
         libssh2_channel_close(ch);
         libssh2_channel_free(ch);
+        ssh_set_io_blocking(ssh, 0);
         return NULL;
     }
+    ssh_set_io_blocking(ssh, 0);
     a->session = ssh->session;
     a->channel = ch;
     return a;

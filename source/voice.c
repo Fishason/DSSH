@@ -144,9 +144,18 @@ static void enter_typing(voice_t *v) {
  * the user interrupts the typewriter with a second START — they don't lose
  * the rest of the text, just the gradual reveal. */
 static void flush_typing(voice_t *v, ssh_client_t *ssh) {
-    if (v->type_pos < v->reply_len) {
-        ssh_write(ssh, v->reply_buf + v->type_pos,
-                  v->reply_len - v->type_pos);
+    /* Bounded drain: ssh_write may take fewer bytes (or 0 on EAGAIN), so
+     * loop until everything is out, the session dies, or ~1s has passed. */
+    int guard = 0;
+    while (v->type_pos < v->reply_len && guard++ < 200) {
+        int n = ssh_write(ssh, v->reply_buf + v->type_pos,
+                          v->reply_len - v->type_pos);
+        if (n < 0) break;                        /* session dead — give up */
+        if (n == 0) {                            /* EAGAIN — brief backoff */
+            svcSleepThread(5 * 1000 * 1000LL);
+            continue;
+        }
+        v->type_pos += n;
     }
     enter_idle(v);
 }
@@ -724,15 +733,29 @@ void voice_tick(voice_t *v, ssh_client_t *ssh) {
              * reply has been streamed, then return to IDLE.  ssh_write on
              * a whole codepoint keeps multi-byte CJK glyphs intact. */
             if (v->state_frame >= v->type_next_at) {
-                if (v->type_pos < v->reply_len) {
+                if (!ssh || !ssh_is_connected(ssh)) {
+                    /* Session died mid-stream (e.g. lid-close disconnect):
+                     * the remaining text has nowhere to go — stop cleanly. */
+                    enter_idle(v);
+                } else if (v->type_pos < v->reply_len) {
                     int clen = utf8_char_len((const unsigned char *)
                                              (v->reply_buf + v->type_pos));
                     if (v->type_pos + clen > v->reply_len)
                         clen = v->reply_len - v->type_pos;
-                    ssh_write(ssh, v->reply_buf + v->type_pos, clen);
-                    v->type_pos    += clen;
-                    v->type_next_at = v->state_frame + v->type_delay;
-                    v->typed_latch  = 1;   /* signal main.c to kick mascot */
+                    int n = ssh_write(ssh, v->reply_buf + v->type_pos, clen);
+                    if (n < 0) {
+                        enter_idle(v);         /* hard error — stop */
+                    } else if (n == clen) {
+                        v->type_pos    += clen;
+                        v->type_next_at = v->state_frame + v->type_delay;
+                        v->typed_latch  = 1;   /* signal main.c to kick mascot */
+                    } else if (n > 0) {
+                        /* Partial glyph on the wire: push the remaining
+                         * bytes next frame with no delay so the remote
+                         * never sits on a torn codepoint. */
+                        v->type_pos += n;
+                    }
+                    /* n == 0 (EAGAIN): retry the same glyph next frame. */
                 } else {
                     enter_idle(v);
                 }
