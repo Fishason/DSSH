@@ -70,6 +70,9 @@
   up questions, **B** to clear and start a new conversation.
 - **RSA-4096 public-key auth** — libssh2 + mbedTLS, private key read
   from the SD card.
+- **Native Tailscale transport** — optionally join the 3DS to a tailnet and
+  carry SSH over direct UDP, Tailscale Peer Relay, or DERP without running Go
+  or `tailscaled`.
 - **Full physical-key mapping** — D-pad arrow keys, hold-style modifiers
   (L = Shift, Y = Ctrl, X = Alt), Circle Pad scrollback / mouse-wheel.
 - **Anthropic-red crab mascot** — scampers along the bottom row, dodges
@@ -186,6 +189,12 @@ passphrase =
 
 # Optional: unlock the current SSH user's macOS login keychain
 macos_keychain_password =
+
+# Optional: connect SSH through the tailnet
+tailscale_auth_key =
+tailscale_hostname = dssh-3ds
+tailscale_state = sdmc:/3ds/3dssh/tailscale.state
+tailscale_control_url = https://controlplane.tailscale.com
 ```
 
 | Field | Meaning |
@@ -196,6 +205,10 @@ macos_keychain_password =
 | `key_path` | Private key path; `sdmc:/...` is the 3DS standard SD prefix |
 | `passphrase` | Optional key passphrase; leave empty (typing one on the soft keyboard is awkward) |
 | `macos_keychain_password` | Optional macOS login password; setting it enables automatic unlock for the current SSH user |
+| `tailscale_auth_key` | Auth key used for registration; setting it enables Tailscale automatically |
+| `tailscale_hostname` | Device name shown in the tailnet |
+| `tailscale_state` | Persistent machine/WireGuard/DISCO identity file |
+| `tailscale_control_url` | Coordination server; defaults to Tailscale SaaS |
 
 When `macos_keychain_password` is set, DSSH waits for the current interactive PTY
 shell to finish initialization, then runs
@@ -222,12 +235,39 @@ macos_keychain_password = "my # password"
 > dedicated macOS account where practical, keep the SD card physically secure,
 > and leave this field empty unless you accept this risk.
 
+### Native Tailscale transport
+
+Tailscale support is provided by
+[`cadl/libts3ds`](https://github.com/cadl/libts3ds), an experimental native C
+client for Nintendo 3DS derived from MicroLink. It is not the official Go
+`tailscale/libtailscale` library and does not run `tailscaled`. DSSH pins the
+audited source as the `libts3ds` git submodule at the
+[`libts3ds-v0.1.0`](https://github.com/cadl/libts3ds/releases/tag/libts3ds-v0.1.0)
+release. The top-level `make` builds the static library automatically.
+
+When enabled, SSH uses the private libts3ds/lwIP TCP stack and can select
+direct UDP, Tailscale Peer Relay, or DERP. The default build uses automatic
+path selection. Diagnostic builds can fix the data path at compile time with
+`DSSH_TAILSCALE_PATH=direct`, `peer-relay`, or `derp`.
+
+Tailscale also starts automatically without an auth key when the state file
+exists. `tailscale_hostname` defaults to `dssh-3ds`, and `tailscale_state`
+defaults to `sdmc:/3ds/3dssh/tailscale.state`. The auth key may remain in the
+configuration after registration, although removing it reduces exposure if the
+SD card is lost.
+
+The state file contains private machine, WireGuard, and DISCO identity keys.
+Treat both it and the auth key as secrets. This is an unofficial community
+integration and is not affiliated with or endorsed by Tailscale Inc.
+
+
 Final SD layout:
 
 ```
 sdmc:/3ds/3dssh/
 ├── config.ini
-└── id_rsa
+├── id_rsa
+└── tailscale.state            # created after Tailscale registration
 ```
 
 ---
@@ -635,9 +675,12 @@ wget https://apt.devkitpro.org/install-devkitpro-pacman
 bash install-devkitpro-pacman
 sudo dkp-pacman -S 3ds-dev 3ds-mbedtls 3ds-libpng 3ds-zlib
 
-# 2. Clone + cd
-git clone https://github.com/Fishason/DSSH.git
+# 2. Clone recursively so libts3ds and its private lwIP are checked out
+git clone --recurse-submodules https://github.com/Fishason/DSSH.git
 cd DSSH
+
+# Existing non-recursive clone only:
+git submodule update --init --recursive
 
 # 3. Cross-compile libssh2 (one-time, drops into $DEVKITPRO/portlibs/3ds/lib/)
 bash build-libssh2.sh
@@ -663,6 +706,11 @@ bash tools/install_cia_tools.sh   # installs bannertool + makerom into ~/bin
 make cia                          # → DSSH.cia
 ```
 
+The build command itself is unchanged: `make` first builds the pinned
+`libts3ds/build/3ds/libts3ds.a`, then links DSSH. If the submodule is missing,
+the Makefile prints the initialization command instead of failing later with a
+missing directory or header.
+
 ### Test the IME engine on the host (no 3DS needed)
 
 ```bash
@@ -684,6 +732,7 @@ DSSH/
 ├── app.rsf                    # makerom CIA spec
 ├── Makefile                   # Top-level build (make / make cia / make test-ime)
 ├── build-libssh2.sh           # libssh2 + mbedTLS ARM cross-compile
+├── libts3ds/                  # Pinned native Tailscale client submodule
 ├── source/
 │   ├── main.c                 # Main loop, SSH receive, UTF-8 reassembly
 │   ├── ssh_client.{c,h}       # libssh2 wrapper
@@ -755,6 +804,9 @@ the full progression.
   and box-drawing pixel font.
 - **[libssh2](https://www.libssh2.org/)** + **[mbedTLS](https://www.trustedfirmware.org/projects/mbed-tls/)** —
   SSH / TLS protocol stack.
+- **[cadl/libts3ds](https://github.com/cadl/libts3ds)** — native Nintendo 3DS
+  Tailscale-compatible transport, derived from
+  **[CamM2325/microlink](https://github.com/CamM2325/microlink)**.
 - **[devkitPro](https://devkitpro.org/) libctru / citro2d / citro3d** —
   3DS user-mode runtime and rendering.
 - **[carstene1ns/3ds-bannertool](https://github.com/carstene1ns/3ds-bannertool)**
