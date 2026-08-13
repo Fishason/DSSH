@@ -8,11 +8,14 @@
  */
 
 typedef struct ssh_client_t ssh_client_t;
+typedef struct ts3ds ts3ds;
 
 /* Connect, authenticate, open shell with PTY. Returns NULL on any failure.
  *   key_path        — path to PEM-format RSA private key (e.g. "sdmc:/3ds/3dssh/id_rsa").
  *   pubkey_path     — public key path or NULL to let libssh2 derive from private.
  *   passphrase      — passphrase for encrypted key, or NULL for unencrypted keys.
+ *   pty_cols/rows    — initial PTY size, set before the remote shell starts.
+ *   tailscale       — optional libts3ds transport; NULL uses a BSD socket.
  *   err_buf, err_sz — optional human-readable error captured on failure.
  */
 ssh_client_t *ssh_connect_pubkey(const char *host, int port,
@@ -20,10 +23,16 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
                                  const char *key_path,
                                  const char *pubkey_path,
                                  const char *passphrase,
+                                 int pty_cols, int pty_rows,
+                                 ts3ds *tailscale,
                                  char *err_buf, int err_sz);
 
 void ssh_disconnect(ssh_client_t *ssh);
 int  ssh_is_connected(ssh_client_t *ssh);
+
+/* Advance an application-owned transport such as libts3ds. Native sockets
+ * need no work. Call this while retrying nonblocking libssh2 operations. */
+void ssh_poll_transport(ssh_client_t *ssh);
 
 /* Returns: bytes read (>=0), or -1 on disconnect. 0 means EAGAIN (try later). */
 int  ssh_read(ssh_client_t *ssh, char *buf, int len);

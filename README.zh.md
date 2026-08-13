@@ -58,6 +58,8 @@
   SSH 会话完全不受打扰。modal 里按 **A** 关窗保留 history（可追问），
   按 **B** 关窗清空 history（新对话）。
 - **RSA-4096 公钥认证**：libssh2 + mbedTLS，私钥放 SD 卡读
+- **原生 Tailscale 传输**：可选地让 3DS 加入 tailnet，通过直连 UDP、
+  Tailscale Peer Relay 或 DERP 承载 SSH，不运行 Go 或 `tailscaled`
 - **物理键全映射**：D-pad 方向键、修饰键 hold-style（L=Shift / Y=Ctrl /
   X=Alt）、Circle Pad scrollback / mouse-wheel
 - **Anthropic 红螃蟹吉祥物**：底行左右奔跑，点击会躲开 🦀
@@ -166,6 +168,15 @@ port       = 22
 user       = ubuntu
 key_path   = sdmc:/3ds/3dssh/id_rsa
 passphrase =
+
+# 可选：自动解锁当前 SSH 用户的 macOS 登录 keychain
+macos_keychain_password =
+
+# 可选：通过 tailnet 连接 SSH
+tailscale_auth_key =
+tailscale_hostname = dssh-3ds
+tailscale_state = sdmc:/3ds/3dssh/tailscale.state
+tailscale_control_url = https://controlplane.tailscale.com
 ```
 
 | 字段 | 说明 |
@@ -175,13 +186,64 @@ passphrase =
 | `user` | 服务器登录用户名 |
 | `key_path` | 私钥路径，`sdmc:/...` 是 3DS 标准 SD 路径前缀 |
 | `passphrase` | 私钥口令；建议留空（SD 卡上输 passphrase 体验差） |
+| `macos_keychain_password` | 可选的 macOS 登录密码；填写后为当前 SSH 用户启用自动解锁 |
+| `tailscale_auth_key` | 注册使用的 auth key；填写后自动开启 Tailscale |
+| `tailscale_hostname` | tailnet 中显示的 3DS 设备名 |
+| `tailscale_state` | 持久化机器、WireGuard 与 DISCO 身份的文件 |
+| `tailscale_control_url` | 控制服务器，默认使用 Tailscale SaaS |
+
+填写 `macos_keychain_password` 后，DSSH 会等待当前交互式 PTY shell 初始化完成，
+然后执行
+`/usr/bin/security unlock-keychain "$HOME/Library/Keychains/login.keychain-db"`。
+只有检测到 macOS 输出 `password to unlock` 后才会通过 PTY 发送密码；不使用
+`-p`，不会进入远端进程参数或 shell history。这满足 macOS Keychain 对交互式
+会话的要求，并兼容 fish、zsh 和 bash。之后 DSSH 会清除内存中的密码副本。
+即使解锁失败，普通 SSH shell 仍可正常使用，并会显示一条警告。之后再启动
+`claude`，它就可以读取登录 keychain 中已有的 credential。
+
+解锁成功时不会再显示诊断日志，DSSH 会清理 bootstrap 输出后再由 fish
+重绘提示符。失败时只保留一条包含 unlock/verify 状态码的简短警告；密码
+本身永远不会显示。
+
+如果密码包含 `#` 或首尾空格，请加引号：
+
+```ini
+macos_keychain_password = "my # password"
+```
+
+> ⚠️ 此功能会把你的 **macOS 登录密码以明文保存在可移除的 SD 卡上**，其
+> 敏感程度高于一把专用 SSH 密钥。建议尽量使用专门的 macOS 账户，妥善保管
+> SD 卡；只有接受这一风险时才填写该字段。
+
+### 原生 Tailscale 传输
+
+Tailscale 支持由 [`cadl/libts3ds`](https://github.com/cadl/libts3ds)
+提供。它是从 MicroLink 派生、面向 Nintendo 3DS 的实验性原生 C 客户端，
+不是官方 Go `tailscale/libtailscale`，也不会运行 `tailscaled`。DSSH 通过
+`libts3ds` git submodule 固定到经过真机验证的
+[`libts3ds-v0.1.0`](https://github.com/cadl/libts3ds/releases/tag/libts3ds-v0.1.0)
+源码；顶层 `make` 会自动先构建静态库。
+
+开启后，SSH 使用 libts3ds 内部的私有 lwIP TCP 栈，可走直连 UDP、
+Tailscale Peer Relay 或 DERP。默认构建自动选路；诊断构建可在编译时通过
+`DSSH_TAILSCALE_PATH=direct`、`peer-relay` 或 `derp` 固定数据路径。
+
+没有 auth key 时，只要 state 文件存在，Tailscale 也会自动启动。
+`tailscale_hostname` 默认是 `dssh-3ds`，`tailscale_state` 默认是
+`sdmc:/3ds/3dssh/tailscale.state`。注册成功后 auth key 可以继续保留在配置中；
+如果担心 SD 卡遗失导致 key 暴露，也可以手动删除。
+
+state 文件包含机器、WireGuard 和 DISCO 私钥身份，必须和 auth key 一样按
+敏感信息保护。本集成为非官方社区项目，与 Tailscale Inc. 无隶属或背书关系。
+
 
 最终 SD 卡布局：
 
 ```
 sdmc:/3ds/3dssh/
 ├── config.ini
-└── id_rsa
+├── id_rsa
+└── tailscale.state            # Tailscale 注册后生成
 ```
 
 ---
@@ -552,9 +614,12 @@ wget https://apt.devkitpro.org/install-devkitpro-pacman
 bash install-devkitpro-pacman
 sudo dkp-pacman -S 3ds-dev 3ds-mbedtls 3ds-libpng 3ds-zlib
 
-# 2. clone + 进项目
-git clone https://github.com/Fishason/DSSH.git
+# 2. 递归 clone，同时拉取 libts3ds 及其私有 lwIP
+git clone --recurse-submodules https://github.com/Fishason/DSSH.git
 cd DSSH
+
+# 仅已有的非递归 clone 需要执行：
+git submodule update --init --recursive
 
 # 3. 交叉编译 libssh2（一次性，输出到 $DEVKITPRO/portlibs/3ds/lib/）
 bash build-libssh2.sh
@@ -580,6 +645,10 @@ bash tools/install_cia_tools.sh   # 装 bannertool + makerom 到 ~/bin
 make cia                           # 输出 DSSH.cia
 ```
 
+构建命令本身没有变化：`make` 会先生成固定版本的
+`libts3ds/build/3ds/libts3ds.a`，再链接 DSSH。若 submodule 未初始化，
+Makefile 会直接提示正确命令，而不是稍后报目录或头文件缺失。
+
 ### 测试 IME 引擎（host 端，不需 3DS）
 
 ```bash
@@ -600,6 +669,7 @@ DSSH/
 ├── app.rsf                    # makerom CIA spec
 ├── Makefile                   # 主构建（make / make cia / make test-ime）
 ├── build-libssh2.sh           # libssh2 + mbedTLS ARM 交叉编译
+├── libts3ds/                  # 固定版本的原生 Tailscale 客户端 submodule
 ├── source/
 │   ├── main.c                 # 主循环、SSH receive、UTF-8 边界
 │   ├── ssh_client.{c,h}       # libssh2 封装
@@ -669,6 +739,9 @@ SSH server (somewhere on the internet)
   box-drawing 像素字体
 - **[libssh2](https://www.libssh2.org/)** + **[mbedTLS](https://www.trustedfirmware.org/projects/mbed-tls/)** —
   SSH/TLS 协议栈
+- **[cadl/libts3ds](https://github.com/cadl/libts3ds)** — Nintendo 3DS 原生
+  Tailscale 兼容传输，派生自
+  **[CamM2325/microlink](https://github.com/CamM2325/microlink)**
 - **[devkitPro](https://devkitpro.org/) libctru / citro2d / citro3d** —
   3DS 用户态运行时 + 渲染
 - **[carstene1ns/3ds-bannertool](https://github.com/carstene1ns/3ds-bannertool)**

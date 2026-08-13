@@ -1,4 +1,6 @@
 #include "ssh_client.h"
+#include <3ds.h>
+#include <ts3ds.h>
 #include <libssh2.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/error.h>
@@ -15,10 +17,69 @@
 
 struct ssh_client_t {
     int              sock;
+    ts3ds_conn      *tailscale_conn;
+    void            *transport;
     LIBSSH2_SESSION *session;
     LIBSSH2_CHANNEL *channel;
     int              connected;
 };
+
+typedef struct ssh_transport {
+    ts3ds *tailscale;
+    ts3ds_conn *connection;
+    int blocking;
+} ssh_transport;
+
+/* libssh2's blocking flag alone is insufficient for callback transports:
+ * its socket wait path cannot advance libts3ds. Keep both layers in the same
+ * mode so the callbacks poll Tailscale while synchronous SSH operations wait. */
+static void ssh_set_io_blocking(ssh_client_t *ssh, int blocking) {
+    if (!ssh || !ssh->session) return;
+    ssh_transport *transport = (ssh_transport *)ssh->transport;
+    if (transport) transport->blocking = blocking ? 1 : 0;
+    libssh2_session_set_blocking(ssh->session, blocking ? 1 : 0);
+}
+
+/* libssh2's callback contract is "-errno", but ts3ds error codes are not
+ * errnos: TS3DS_ERR_INTERNAL (-11) would read as -EAGAIN and turn a hard
+ * transport failure into an infinite silent retry.  Map AGAIN faithfully
+ * and collapse every other error onto -EIO. */
+static ssize_t map_ts3ds_result(ssize_t result) {
+    if (result >= 0) return result;
+    if (result == TS3DS_ERR_AGAIN) return -EAGAIN;
+    return -EIO;
+}
+
+static ssize_t tailscale_send_cb(libssh2_socket_t socket,
+                                 const void *buffer, size_t length, int flags,
+                                 void **abstract) {
+    ssh_transport *transport = abstract ? (ssh_transport *)*abstract : NULL;
+    (void)socket; (void)flags;
+    if (!transport || !transport->connection) return -EIO;
+    for (;;) {
+        ssize_t result = ts3ds_conn_write(transport->connection, buffer, length);
+        if (result != TS3DS_ERR_AGAIN || !transport->blocking) {
+            return map_ts3ds_result(result);
+        }
+        ts3ds_poll(transport->tailscale);
+        svcSleepThread(1000000);
+    }
+}
+
+static ssize_t tailscale_recv_cb(libssh2_socket_t socket, void *buffer,
+                                 size_t length, int flags, void **abstract) {
+    ssh_transport *transport = abstract ? (ssh_transport *)*abstract : NULL;
+    (void)socket; (void)flags;
+    if (!transport || !transport->connection) return -EIO;
+    for (;;) {
+        ssize_t result = ts3ds_conn_read(transport->connection, buffer, length);
+        if (result != TS3DS_ERR_AGAIN || !transport->blocking) {
+            return map_ts3ds_result(result);
+        }
+        ts3ds_poll(transport->tailscale);
+        svcSleepThread(1000000);
+    }
+}
 
 static void copy_err(char *dst, int dst_sz, const char *src) {
     if (dst && dst_sz > 0) {
@@ -68,37 +129,77 @@ static int tcp_connect(const char *host, int port, char *err, int err_sz) {
     return sock;
 }
 
+static void close_pending_transport(int sock, ts3ds_conn *connection,
+                                    ssh_transport *transport) {
+    if (sock >= 0) closesocket(sock);
+    if (connection) ts3ds_conn_close(connection);
+    free(transport);
+}
+
 ssh_client_t *ssh_connect_pubkey(const char *host, int port,
-                                  const char *user,
-                                  const char *key_path,
-                                  const char *pubkey_path,
-                                  const char *passphrase,
-                                  char *err_buf, int err_sz) {
+                                 const char *user,
+                                 const char *key_path,
+                                 const char *pubkey_path,
+                                 const char *passphrase,
+                                 int pty_cols, int pty_rows,
+                                 ts3ds *tailscale,
+                                 char *err_buf, int err_sz) {
     if (libssh2_init(0) != 0) {
         copy_err(err_buf, err_sz, "libssh2_init failed");
         return NULL;
     }
 
-    int sock = tcp_connect(host, port, err_buf, err_sz);
-    if (sock < 0) {
+    int sock = -1;
+    ts3ds_conn *tailscale_conn = NULL;
+    ssh_transport *transport = NULL;
+    if (tailscale) {
+        int dial_result = ts3ds_dial_tcp(tailscale, host,
+                                         (uint16_t)port, &tailscale_conn);
+        if (dial_result != TS3DS_OK) {
+            snprintf(err_buf, err_sz,
+                     "Tailscale TCP dial failed (%d): %.180s",
+                     dial_result, ts3ds_last_error(tailscale));
+            libssh2_exit();
+            return NULL;
+        }
+        transport = calloc(1, sizeof(*transport));
+        if (!transport) {
+            ts3ds_conn_close(tailscale_conn);
+            libssh2_exit();
+            return NULL;
+        }
+        transport->tailscale = tailscale;
+        transport->connection = tailscale_conn;
+        transport->blocking = 1;
+    } else {
+        sock = tcp_connect(host, port, err_buf, err_sz);
+        if (sock < 0) {
+            libssh2_exit();
+            return NULL;
+        }
+    }
+
+    LIBSSH2_SESSION *session = libssh2_session_init_ex(NULL, NULL, NULL,
+                                                       transport);
+    if (!session) {
+        copy_err(err_buf, err_sz, "session_init failed");
+        close_pending_transport(sock, tailscale_conn, transport);
         libssh2_exit();
         return NULL;
     }
-
-    LIBSSH2_SESSION *session = libssh2_session_init();
-    if (!session) {
-        copy_err(err_buf, err_sz, "session_init failed");
-        closesocket(sock);
-        libssh2_exit();
-        return NULL;
+    if (transport) {
+        libssh2_session_callback_set(session, LIBSSH2_CALLBACK_SEND,
+                                     (void *)tailscale_send_cb);
+        libssh2_session_callback_set(session, LIBSSH2_CALLBACK_RECV,
+                                     (void *)tailscale_recv_cb);
     }
     libssh2_session_set_blocking(session, 1);
 
-    int hs_rc = libssh2_session_handshake(session, sock);
+    int hs_rc = libssh2_session_handshake(session, transport ? 0 : sock);
     if (hs_rc != 0) {
         copy_libssh2_err(err_buf, err_sz, session, "handshake", hs_rc);
         libssh2_session_free(session);
-        closesocket(sock);
+        close_pending_transport(sock, tailscale_conn, transport);
         libssh2_exit();
         return NULL;
     }
@@ -112,7 +213,7 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
                      "open key file failed: %s (errno=%d)", key_path, errno);
             libssh2_session_disconnect(session, "no key");
             libssh2_session_free(session);
-            closesocket(sock);
+            close_pending_transport(sock, tailscale_conn, transport);
             libssh2_exit();
             return NULL;
         }
@@ -130,7 +231,7 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
                      "key not PEM (size=%ld). Head: %.30s", key_size, first);
             libssh2_session_disconnect(session, "bad key");
             libssh2_session_free(session);
-            closesocket(sock);
+            close_pending_transport(sock, tailscale_conn, transport);
             libssh2_exit();
             return NULL;
         }
@@ -145,7 +246,7 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
                  user, methods);
         libssh2_session_disconnect(session, "no pubkey method");
         libssh2_session_free(session);
-        closesocket(sock);
+        close_pending_transport(sock, tailscale_conn, transport);
         libssh2_exit();
         return NULL;
     }
@@ -169,7 +270,7 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
             mbedtls_pk_free(&tctx);
             libssh2_session_disconnect(session, "mbedtls parse");
             libssh2_session_free(session);
-            closesocket(sock);
+            close_pending_transport(sock, tailscale_conn, transport);
             libssh2_exit();
             return NULL;
         }
@@ -199,7 +300,7 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
                  prefix, inner, key_size, user, methods ? methods : "?");
         libssh2_session_disconnect(session, "auth failed");
         libssh2_session_free(session);
-        closesocket(sock);
+        close_pending_transport(sock, tailscale_conn, transport);
         libssh2_exit();
         return NULL;
     }
@@ -211,20 +312,24 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
         copy_libssh2_err(err_buf, err_sz, session, "channel_open", -1);
         libssh2_session_disconnect(session, "channel failed");
         libssh2_session_free(session);
-        closesocket(sock);
+        close_pending_transport(sock, tailscale_conn, transport);
         libssh2_exit();
         return NULL;
     }
 
     libssh2_channel_setenv(channel, "COLORTERM", "truecolor");
-    int pty_rc = libssh2_channel_request_pty(channel, "xterm-256color");
+    if (pty_cols <= 0) pty_cols = 80;
+    if (pty_rows <= 0) pty_rows = 24;
+    int pty_rc = libssh2_channel_request_pty_ex(
+        channel, "xterm-256color", sizeof("xterm-256color") - 1,
+        NULL, 0, pty_cols, pty_rows, 0, 0);
     if (pty_rc != 0) {
         copy_libssh2_err(err_buf, err_sz, session, "pty", pty_rc);
         libssh2_channel_close(channel);
         libssh2_channel_free(channel);
         libssh2_session_disconnect(session, "pty failed");
         libssh2_session_free(session);
-        closesocket(sock);
+        close_pending_transport(sock, tailscale_conn, transport);
         libssh2_exit();
         return NULL;
     }
@@ -236,12 +341,13 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
         libssh2_channel_free(channel);
         libssh2_session_disconnect(session, "shell failed");
         libssh2_session_free(session);
-        closesocket(sock);
+        close_pending_transport(sock, tailscale_conn, transport);
         libssh2_exit();
         return NULL;
     }
 
     libssh2_session_set_blocking(session, 0);
+    if (transport) transport->blocking = 0;
 
     /* Enable keepalive so we can tell idle-connection from broken-network.
      * want_reply=1 makes the server SSH_MSG_GLOBAL_REQUEST/keepalive
@@ -256,12 +362,14 @@ ssh_client_t *ssh_connect_pubkey(const char *host, int port,
         libssh2_channel_free(channel);
         libssh2_session_disconnect(session, "oom");
         libssh2_session_free(session);
-        closesocket(sock);
+        close_pending_transport(sock, tailscale_conn, transport);
         libssh2_exit();
         return NULL;
     }
 
     ssh->sock      = sock;
+    ssh->tailscale_conn = tailscale_conn;
+    ssh->transport = transport;
     ssh->session   = session;
     ssh->channel   = channel;
     ssh->connected = 1;
@@ -279,11 +387,22 @@ void ssh_disconnect(ssh_client_t *ssh) {
         libssh2_session_free(ssh->session);
     }
     if (ssh->sock >= 0) closesocket(ssh->sock);
+    if (ssh->tailscale_conn) ts3ds_conn_close(ssh->tailscale_conn);
+    free(ssh->transport);
     libssh2_exit();
     free(ssh);
 }
 
 int ssh_is_connected(ssh_client_t *ssh) { return ssh && ssh->connected; }
+
+void ssh_poll_transport(ssh_client_t *ssh) {
+    ssh_transport *transport;
+    if (!ssh || !ssh->transport) return;
+    transport = (ssh_transport *)ssh->transport;
+    if (transport->tailscale &&
+        ts3ds_get_status(transport->tailscale) == TS3DS_STATUS_ONLINE)
+        (void)ts3ds_poll(transport->tailscale);
+}
 
 int ssh_read(ssh_client_t *ssh, char *buf, int len) {
     if (!ssh || !ssh->connected) return -1;
@@ -334,36 +453,36 @@ ssh_aux_channel_t *ssh_aux_exec(ssh_client_t *ssh, const char *cmd,
                                 char *err_buf, int err_sz) {
     if (!ssh || !ssh->connected || !ssh->session || !cmd) return NULL;
 
-    /* Briefly flip session to blocking mode so open + exec round-trip
-     * inline.  This stalls the main loop for ~one TCP RTT (~50-200 ms),
-     * which is invisible alongside the multi-second voice transcription
-     * we're about to wait for.  An async open would be cleaner but adds
-     * substantial state-machine code for no perceptible UX gain. */
-    libssh2_session_set_blocking(ssh->session, 1);
+    /* Briefly flip both libssh2 and its optional callback transport to
+     * blocking mode so open + exec can complete inline. This stalls the main
+     * loop for roughly one RTT, which is invisible beside transcription. */
+    ssh_set_io_blocking(ssh, 1);
 
     LIBSSH2_CHANNEL *ch = libssh2_channel_open_session(ssh->session);
     if (!ch) {
         copy_libssh2_err(err_buf, err_sz, ssh->session, "aux open_session", 0);
-        libssh2_session_set_blocking(ssh->session, 0);
+        ssh_set_io_blocking(ssh, 0);
         return NULL;
     }
     int rc = libssh2_channel_exec(ch, cmd);
     if (rc != 0) {
         copy_libssh2_err(err_buf, err_sz, ssh->session, "aux exec", rc);
+        /* Free while still blocking: in nonblocking mode channel_free can
+         * return EAGAIN without freeing, leaking the channel. */
         libssh2_channel_free(ch);
-        libssh2_session_set_blocking(ssh->session, 0);
+        ssh_set_io_blocking(ssh, 0);
         return NULL;
     }
-
-    libssh2_session_set_blocking(ssh->session, 0);
 
     ssh_aux_channel_t *a = calloc(1, sizeof(*a));
     if (!a) {
         copy_err(err_buf, err_sz, "aux alloc oom");
         libssh2_channel_close(ch);
         libssh2_channel_free(ch);
+        ssh_set_io_blocking(ssh, 0);
         return NULL;
     }
+    ssh_set_io_blocking(ssh, 0);
     a->session = ssh->session;
     a->channel = ch;
     return a;
