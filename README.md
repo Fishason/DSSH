@@ -183,6 +183,9 @@ port       = 22
 user       = ubuntu
 key_path   = sdmc:/3ds/3dssh/id_rsa
 passphrase =
+
+# Optional: unlock the current SSH user's macOS login keychain
+macos_keychain_password =
 ```
 
 | Field | Meaning |
@@ -192,6 +195,32 @@ passphrase =
 | `user` | SSH login user |
 | `key_path` | Private key path; `sdmc:/...` is the 3DS standard SD prefix |
 | `passphrase` | Optional key passphrase; leave empty (typing one on the soft keyboard is awkward) |
+| `macos_keychain_password` | Optional macOS login password; setting it enables automatic unlock for the current SSH user |
+
+When `macos_keychain_password` is set, DSSH waits for the current interactive PTY
+shell to finish initialization, then runs
+`/usr/bin/security unlock-keychain "$HOME/Library/Keychains/login.keychain-db"`.
+It waits until macOS prints `password to unlock` before sending the password
+through the PTY—not `-p`, the remote process arguments, or shell history. This
+matches macOS Keychain's interactive-session requirement and works with fish,
+zsh, and bash. DSSH then clears its in-memory copy. If unlock fails, the normal
+SSH shell remains available and a warning is shown. A later `claude` launch can
+then read the credential already stored in that login keychain.
+
+Successful unlock diagnostics are hidden and the bootstrap output is cleared
+before fish redraws its prompt. On failure, DSSH keeps one concise warning with
+the unlock and verification status codes. The password itself is never shown.
+
+Quote a password containing `#` or leading/trailing spaces:
+
+```ini
+macos_keychain_password = "my # password"
+```
+
+> ⚠️ This option stores your **macOS login password in plaintext on the
+> removable SD card**. That is more sensitive than a dedicated SSH key. Use a
+> dedicated macOS account where practical, keep the SD card physically secure,
+> and leave this field empty unless you accept this risk.
 
 Final SD layout:
 

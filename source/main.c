@@ -27,6 +27,7 @@
 
 #include "ssh_client.h"
 #include "config.h"
+#include "keychain_protocol.h"
 #include "terminal.h"
 #include "renderer.h"
 #include "keyboard.h"
@@ -41,6 +42,12 @@
 
 #define CONFIG_PATH     "sdmc:/3ds/3dssh/config.ini"
 #define READ_BUFSZ      2048
+
+/* Interactive shell startup can be noticeably slower over Tailscale/DERP,
+ * especially when fish/zsh startup hooks perform network or filesystem I/O. */
+#define SHELL_READY_TIMEOUT_MS      60000
+#define KEYCHAIN_PROMPT_TIMEOUT_MS  30000
+#define KEYCHAIN_RESULT_TIMEOUT_MS  30000
 
 #define COLOR_OK        0xa6e3a1ff
 #define COLOR_WARN      0xfab387ff
@@ -102,12 +109,243 @@ static void feed_terminal(terminal_t *term, const char *raw, int raw_len) {
     terminal_write_n(term, buf, valid_end);
 }
 
+typedef struct {
+    int unlock_status;
+    int verify_status;
+} keychain_report_t;
+
+static int startup_write_all(ssh_client_t *ssh, const char *data, int len,
+                             int timeout_ms);
+
+static void flush_terminal_responses(ssh_client_t *ssh, terminal_t *term) {
+    char reply[TERM_RESPONSE_MAX];
+    int n;
+    while ((n = terminal_take_response(term, reply, sizeof(reply))) > 0)
+        if (startup_write_all(ssh, reply, n, 1000) != 0) break;
+}
+
+static int startup_write_all(ssh_client_t *ssh, const char *data, int len,
+                             int timeout_ms) {
+    int sent = 0;
+    u64 deadline = osGetTime() + (u64)timeout_ms;
+    while (sent < len && osGetTime() < deadline) {
+        int n = ssh_write(ssh, data + sent, len - sent);
+        if (n < 0) return -1;
+        if (n == 0) {
+            svcSleepThread(10 * 1000 * 1000LL);
+        } else {
+            sent += n;
+        }
+    }
+    return sent == len ? 0 : -1;
+}
+
+static void append_startup_tail(char *tail, int cap, int *tail_len,
+                                const char *data, int len) {
+    if (len >= cap - 1) {
+        data += len - (cap - 1);
+        len = cap - 1;
+        *tail_len = 0;
+    } else if (*tail_len + len >= cap) {
+        int drop = *tail_len + len - (cap - 1);
+        memmove(tail, tail + drop, (size_t)(*tail_len - drop));
+        *tail_len -= drop;
+    }
+    memcpy(tail + *tail_len, data, (size_t)len);
+    *tail_len += len;
+    tail[*tail_len] = 0;
+}
+
+/* Pump the main interactive PTY until either marker/prompt appears. Feeding
+ * the terminal while waiting is essential for fish: its startup asks CSI 6n
+ * and will not finish drawing the prompt until DSSH sends the queued CPR
+ * reply. The alternate marker is optional; a return value of 1 means needle,
+ * 2 means alternate, 0 means timeout, and -1 means SSH disconnected. */
+static int wait_for_remote_text_any(ssh_client_t *ssh, terminal_t *term,
+                                    const char *needle,
+                                    const char *alternate,
+                                    int timeout_ms,
+                                    char *capture, int capture_sz) {
+    char raw[READ_BUFSZ];
+    char tail[768] = {0};
+    int tail_len = 0;
+    u64 deadline = osGetTime() + (u64)timeout_ms;
+
+    while (osGetTime() < deadline) {
+        int n = ssh_read(ssh, raw, sizeof(raw));
+        if (n < 0) return -1;
+        if (n == 0) {
+            svcSleepThread(10 * 1000 * 1000LL);
+            continue;
+        }
+        append_startup_tail(tail, sizeof(tail), &tail_len, raw, n);
+        feed_terminal(term, raw, n);
+        flush_terminal_responses(ssh, term);
+        char *found = strstr(tail, needle);
+        char *found_alternate = alternate ? strstr(tail, alternate) : NULL;
+        if (found || found_alternate) {
+            if (capture && capture_sz > 0)
+                snprintf(capture, (size_t)capture_sz, "%s", tail);
+            if (!found) return 2;
+            if (!found_alternate) return 1;
+            return found <= found_alternate ? 1 : 2;
+        }
+    }
+    if (capture && capture_sz > 0)
+        snprintf(capture, (size_t)capture_sz, "%s", tail);
+    return 0;
+}
+
+static int wait_for_remote_text(ssh_client_t *ssh, terminal_t *term,
+                                const char *needle, int timeout_ms,
+                                char *capture, int capture_sz) {
+    return wait_for_remote_text_any(ssh, term, needle, NULL, timeout_ms,
+                                    capture, capture_sz);
+}
+
+static int parse_keychain_result(const char *capture,
+                                 keychain_report_t *report,
+                                 char *err, int err_sz) {
+    const char *result = strstr(capture, "DSSH_KEYCHAIN_RESULT");
+    if (!result || sscanf(result,
+            "DSSH_KEYCHAIN_RESULT unlock=%d verify=%d",
+            &report->unlock_status, &report->verify_status) != 2) {
+        snprintf(err, (size_t)err_sz, "invalid keychain result marker");
+        return -1;
+    }
+    if (report->unlock_status != 0) {
+        snprintf(err, (size_t)err_sz,
+                 "security unlock-keychain failed (status=%d)",
+                 report->unlock_status);
+        return -1;
+    }
+    if (report->verify_status != 0) {
+        snprintf(err, (size_t)err_sz,
+                 "keychain verification failed (status=%d)",
+                 report->verify_status);
+        return -1;
+    }
+    err[0] = 0;
+    return 0;
+}
+
+/* Unlock through the already-open interactive PTY, mirroring ServerCC's
+ * proven macOS flow: wait for a prompt-ready shell, start security, wait for
+ * its password prompt, then write the password.  An exec channel without a
+ * PTY can fail with "User interaction is not allowed" on macOS. */
+static int unlock_macos_keychain(ssh_client_t *ssh, terminal_t *term,
+                                 const char *password,
+                                 keychain_report_t *report,
+                                 char *err, int err_sz) {
+    static const char ready_command[] =
+        "printf '\\033]777;%s_READY_%s\\007' DSSH SHELL\n";
+    static const char ready_marker[] = "DSSH_READY_SHELL";
+    static const char unlock_command[] =
+        "sh -c '/usr/bin/security unlock-keychain "
+        "\"$HOME/Library/Keychains/login.keychain-db\"; u=$?; v=-1; "
+        "if [ \"$u\" -eq 0 ]; then /usr/bin/security show-keychain-info "
+        "\"$HOME/Library/Keychains/login.keychain-db\" >/dev/null 2>&1; "
+        "v=$?; fi; "
+        "printf \"\\033]777;DSSH_KEYCHAIN_RESULT unlock=%d verify=%d\\007\" "
+        "\"$u\" \"$v\"; "
+        "printf \"\\033[2J\\033[H\"; "
+        "if [ \"$u\" -ne 0 ] || [ \"$v\" -ne 0 ]; then "
+        "printf \"[keychain] unlock failed (unlock=%d verify=%d)\\n\" "
+        "\"$u\" \"$v\"; fi'\n";
+    static const char result_marker[] = DSSH_KEYCHAIN_RESULT_MARKER;
+    char capture[768];
+
+    report->unlock_status = -1;
+    report->verify_status = -1;
+    if (!password || !*password) {
+        snprintf(err, (size_t)err_sz, "keychain password is empty");
+        return -1;
+    }
+
+    if (startup_write_all(ssh, ready_command,
+                          sizeof(ready_command) - 1, 3000) != 0) {
+        snprintf(err, (size_t)err_sz, "shell readiness probe write failed");
+        return -1;
+    }
+    int rc = wait_for_remote_text(ssh, term, ready_marker,
+                                  SHELL_READY_TIMEOUT_MS,
+                                  NULL, 0);
+    if (rc <= 0) {
+        if (rc < 0) {
+            snprintf(err, (size_t)err_sz,
+                     "SSH disconnected while waiting for shell");
+        } else {
+            snprintf(err, (size_t)err_sz,
+                     "shell readiness probe timed out after %ds",
+                     SHELL_READY_TIMEOUT_MS / 1000);
+        }
+        return -1;
+    }
+
+    if (startup_write_all(ssh, unlock_command,
+                          sizeof(unlock_command) - 1, 3000) != 0) {
+        snprintf(err, (size_t)err_sz, "unlock command write failed");
+        return -1;
+    }
+    rc = wait_for_remote_text_any(ssh, term, "password to unlock",
+                                  result_marker,
+                                  KEYCHAIN_PROMPT_TIMEOUT_MS,
+                                  capture, sizeof(capture));
+    if (rc == 2) {
+        /* security can fail before it ever asks for a password (for example,
+         * when the keychain path or utility is unavailable). Consume and
+         * report that result immediately instead of waiting for a prompt that
+         * will never arrive. */
+        return parse_keychain_result(capture, report, err, err_sz);
+    }
+    if (rc <= 0) {
+        if (rc < 0) {
+            snprintf(err, (size_t)err_sz,
+                     "SSH disconnected before keychain password prompt");
+        } else {
+            snprintf(err, (size_t)err_sz,
+                     "keychain password prompt timed out after %ds",
+                     KEYCHAIN_PROMPT_TIMEOUT_MS / 1000);
+        }
+        return -1;
+    }
+
+    /* The password is sent only after security owns the foreground PTY and
+     * has disabled echo, so it is neither displayed nor stored in history. */
+    if (startup_write_all(ssh, password, (int)strlen(password), 3000) != 0 ||
+        startup_write_all(ssh, "\n", 1, 3000) != 0) {
+        snprintf(err, (size_t)err_sz, "keychain password write failed");
+        return -1;
+    }
+
+    rc = wait_for_remote_text(ssh, term, result_marker,
+                              KEYCHAIN_RESULT_TIMEOUT_MS,
+                              capture, sizeof(capture));
+    if (rc <= 0) {
+        if (rc < 0) {
+            snprintf(err, (size_t)err_sz,
+                     "SSH disconnected during keychain verification");
+        } else {
+            snprintf(err, (size_t)err_sz,
+                     "keychain result timed out after %ds",
+                     KEYCHAIN_RESULT_TIMEOUT_MS / 1000);
+        }
+        return -1;
+    }
+    return parse_keychain_result(capture, report, err, err_sz);
+}
+
 /* Wall-clock of the last successful ssh_write.  Compared against
  * last_rx_at by the main loop's interactivity-stall detector — if we
  * sent input recently but haven't received anything back, the network
  * is unresponsive even when libssh2 hasn't yet declared the socket
  * dead.  Updated only by send_to_ssh below. */
 static time_t g_last_tx_at = 0;
+
+static void clear_secret(char *s, size_t len) {
+    volatile unsigned char *p = (volatile unsigned char *)s;
+    while (len-- > 0) *p++ = 0;
+}
 
 /* Snap the local terminal view to the bottom (canceling any user-side
  * scrollback peek) right before sending a key.  This way the user always
@@ -126,9 +364,10 @@ static void send_to_ssh(ssh_client_t *ssh, terminal_t *term,
 /* Establish (or re-establish) the SSH session using the loaded config.
  * Used both for the initial connect at startup and for the SELECT-key
  * reconnect after a hard disconnect (lid-close sleep kills the TCP).
- * On success: returns a new ssh_client_t, sizes the PTY, writes the
- * green "connected." banner + a status string.  On failure: returns
- * NULL, writes the red SSH-error banner + the diagnostic in err. */
+ * On success: returns a new ssh_client_t, resets the local terminal
+ * (fish CPR needs remote coordinates), sizes the PTY and sets a status
+ * string.  On failure: returns NULL, writes the red SSH-error banner +
+ * the diagnostic in err. */
 static ssh_client_t *reconnect_ssh(const ssh_config_t *cfg,
                                    terminal_t *term,
                                    char *status_buf, int status_sz,
@@ -137,6 +376,7 @@ static ssh_client_t *reconnect_ssh(const ssh_config_t *cfg,
         cfg->host, cfg->port, cfg->user,
         cfg->key_path, NULL,
         cfg->passphrase[0] ? cfg->passphrase : NULL,
+        R_TOP_COLS, R_TOP_ROWS,
         err, err_sz);
 
     if (!ssh) {
@@ -147,7 +387,10 @@ static ssh_client_t *reconnect_ssh(const ssh_config_t *cfg,
         return NULL;
     }
 
-    terminal_write(term, "\x1b[32mconnected.\x1b[0m\r\n");
+    /* Local banners ("Reconnecting...", startup text) are not part of the
+     * remote PTY screen. Reset before parsing shell output so fish's
+     * cursor-position queries see the same coordinate system as sshd. */
+    terminal_reset(term);
     ssh_set_pty_size(ssh, R_TOP_COLS, R_TOP_ROWS);
     snprintf(status_buf, status_sz, "connected %s:%d", cfg->host, cfg->port);
     return ssh;
@@ -252,7 +495,7 @@ int main(int argc, char *argv[]) {
     {
         char banner[160];
         snprintf(banner, sizeof(banner),
-                 "connecting to \x1b[33m%s@%s:%d\x1b[0m...\r\n",
+                 "connecting to \x1b[33m%.48s@%.64s:%d\x1b[0m...\r\n",
                  cfg.user, cfg.host, cfg.port);
         terminal_write(term, banner);
     }
@@ -274,6 +517,64 @@ int main(int argc, char *argv[]) {
                         err, sizeof(err));
     status_color = ssh ? COLOR_OK : COLOR_ERR;
 
+    {
+        if (ssh && cfg.macos_keychain_password[0]) {
+            /* Keep this local-only progress line visible while bootstrap
+             * blocks, then reset again so fish CPR uses remote coordinates. */
+            terminal_write(term,
+                "\x1b[36mUnlocking macOS keychain...\x1b[0m\r\n");
+            C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+            C2D_TargetClear(top, C2D_Color32(0x1a, 0x1b, 0x26, 0xff));
+            C2D_SceneBegin(top);
+            renderer_draw_terminal(r, term);
+            C2D_TargetClear(bot, C2D_Color32(0x18, 0x18, 0x25, 0xff));
+            C2D_SceneBegin(bot);
+            softkb_draw(kb, r, kbd);
+            C3D_FrameEnd(0);
+            terminal_reset(term);
+
+            keychain_report_t report = { -1, -1 };
+            int unlock_rc = unlock_macos_keychain(
+                ssh, term, cfg.macos_keychain_password,
+                &report, err, sizeof(err));
+
+            /* ssh_read()/ssh_write() clear the connected flag on a hard
+             * error. Do not leave a non-NULL but unusable session in the
+             * idle loop. */
+            if (!ssh_is_connected(ssh)) {
+                if (unlock_rc == 0)
+                    snprintf(err, sizeof(err),
+                             "SSH disconnected during keychain bootstrap");
+                char line[320];
+                snprintf(line, sizeof(line),
+                         "\x1b[31mSSH error:\x1b[0m %s\r\n", err);
+                terminal_write(term, line);
+                snprintf(status_buf, sizeof(status_buf), "ssh err");
+                status_color = COLOR_ERR;
+                ssh_disconnect(ssh);
+                ssh = NULL;
+            } else if (unlock_rc != 0) {
+                /* Completed commands print FAILED + exit codes themselves.
+                 * Only transport/prompt timeouts need a local fallback. */
+                if (report.unlock_status < 0 && report.verify_status < 0) {
+                    /* A prompt/result timeout can leave `security` owning the
+                     * foreground PTY. Abort it before handing control to the
+                     * user so keyboard input reaches the normal shell. */
+                    (void)startup_write_all(ssh, "\x03\n", 2, 2000);
+                    char line[320];
+                    snprintf(line, sizeof(line),
+                        "\x1b[33mkeychain bootstrap failed:\x1b[0m %s\r\n",
+                        err);
+                    terminal_write(term, line);
+                }
+            }
+        }
+    }
+
+    /* NOTE: cfg.passphrase / cfg.macos_keychain_password intentionally stay
+     * in memory — the SELECT-key reconnect path re-authenticates with them.
+     * Both are wiped by clear_secret() in the cleanup path at exit. */
+
 idle_loop:
     {
         char rbuf[READ_BUFSZ];
@@ -294,7 +595,7 @@ idle_loop:
         time_t last_rx_at = time(NULL);
         g_last_tx_at      = last_rx_at;
         int    stall_alert = 0;
-        int    ssh_dead    = 0;
+        int    ssh_dead    = ssh ? 0 : 1;
 
         while (aptMainLoop()) {
             hidScanInput();
@@ -377,6 +678,10 @@ idle_loop:
                      * UTF-8 reassembler can chop the buffer up. */
                     softkb_record_recv(kb, rbuf, n);
                     feed_terminal(term, rbuf, n);
+                    /* Interactive shells such as fish query cursor/device
+                     * state and wait for the terminal emulator to reply.
+                     * Return any responses queued by terminal_write_n(). */
+                    flush_terminal_responses(ssh, term);
                     last_rx_at = time(NULL);
                 } else if (n < 0) {
                     /* Hard disconnect.  Tear down the session, mark it
@@ -585,6 +890,9 @@ idle_loop:
     net_fini();
 
 cleanup:
+    clear_secret(cfg.passphrase, sizeof(cfg.passphrase));
+    clear_secret(cfg.macos_keychain_password,
+                 sizeof(cfg.macos_keychain_password));
     if (aim)   ai_modal_free(aim);
     if (voice) voice_free(voice);
     if (ime)  ime_free(ime);

@@ -166,6 +166,9 @@ port       = 22
 user       = ubuntu
 key_path   = sdmc:/3ds/3dssh/id_rsa
 passphrase =
+
+# 可选：自动解锁当前 SSH 用户的 macOS 登录 keychain
+macos_keychain_password =
 ```
 
 | 字段 | 说明 |
@@ -175,6 +178,30 @@ passphrase =
 | `user` | 服务器登录用户名 |
 | `key_path` | 私钥路径，`sdmc:/...` 是 3DS 标准 SD 路径前缀 |
 | `passphrase` | 私钥口令；建议留空（SD 卡上输 passphrase 体验差） |
+| `macos_keychain_password` | 可选的 macOS 登录密码；填写后为当前 SSH 用户启用自动解锁 |
+
+填写 `macos_keychain_password` 后，DSSH 会等待当前交互式 PTY shell 初始化完成，
+然后执行
+`/usr/bin/security unlock-keychain "$HOME/Library/Keychains/login.keychain-db"`。
+只有检测到 macOS 输出 `password to unlock` 后才会通过 PTY 发送密码；不使用
+`-p`，不会进入远端进程参数或 shell history。这满足 macOS Keychain 对交互式
+会话的要求，并兼容 fish、zsh 和 bash。之后 DSSH 会清除内存中的密码副本。
+即使解锁失败，普通 SSH shell 仍可正常使用，并会显示一条警告。之后再启动
+`claude`，它就可以读取登录 keychain 中已有的 credential。
+
+解锁成功时不会再显示诊断日志，DSSH 会清理 bootstrap 输出后再由 fish
+重绘提示符。失败时只保留一条包含 unlock/verify 状态码的简短警告；密码
+本身永远不会显示。
+
+如果密码包含 `#` 或首尾空格，请加引号：
+
+```ini
+macos_keychain_password = "my # password"
+```
+
+> ⚠️ 此功能会把你的 **macOS 登录密码以明文保存在可移除的 SD 卡上**，其
+> 敏感程度高于一把专用 SSH 密钥。建议尽量使用专门的 macOS 账户，妥善保管
+> SD 卡；只有接受这一风险时才填写该字段。
 
 最终 SD 卡布局：
 

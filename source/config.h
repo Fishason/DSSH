@@ -11,6 +11,7 @@
  *   user = ubuntu
  *   key_path = sdmc:/3ds/3dssh/id_rsa
  *   passphrase =                  # leave empty for unencrypted keys
+ *   macos_keychain_password =     # quote values containing # or edge spaces
  */
 
 #define CONFIG_STR_MAX 256
@@ -21,6 +22,7 @@ typedef struct {
     char user[CONFIG_STR_MAX];
     char key_path[CONFIG_STR_MAX];
     char passphrase[CONFIG_STR_MAX];
+    char macos_keychain_password[CONFIG_STR_MAX];
 } ssh_config_t;
 
 /* Fills cfg with defaults then overlays values from config file (if present).
