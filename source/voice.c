@@ -745,15 +745,21 @@ void voice_tick(voice_t *v, ssh_client_t *ssh) {
                     int n = ssh_write(ssh, v->reply_buf + v->type_pos, clen);
                     if (n < 0) {
                         enter_idle(v);         /* hard error — stop */
-                    } else if (n == clen) {
-                        v->type_pos    += clen;
-                        v->type_next_at = v->state_frame + v->type_delay;
-                        v->typed_latch  = 1;   /* signal main.c to kick mascot */
                     } else if (n > 0) {
-                        /* Partial glyph on the wire: push the remaining
-                         * bytes next frame with no delay so the remote
-                         * never sits on a torn codepoint. */
                         v->type_pos += n;
+                        /* A continuation byte at type_pos means the glyph is
+                         * still torn on the wire (partial write, or we're
+                         * finishing one): push the rest next frame with no
+                         * delay and don't kick the mascot until the glyph
+                         * completes. */
+                        int mid_glyph =
+                            v->type_pos < v->reply_len &&
+                            ((unsigned char)v->reply_buf[v->type_pos] & 0xc0)
+                                == 0x80;
+                        if (!mid_glyph) {
+                            v->type_next_at = v->state_frame + v->type_delay;
+                            v->typed_latch  = 1;   /* main.c kicks mascot */
+                        }
                     }
                     /* n == 0 (EAGAIN): retry the same glyph next frame. */
                 } else {

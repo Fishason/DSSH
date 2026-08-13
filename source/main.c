@@ -587,7 +587,8 @@ static ssh_client_t *reconnect_ssh(const ssh_config_t *cfg,
      * cursor-position queries see the same coordinate system as sshd. */
     terminal_reset(term);
     ssh_set_pty_size(ssh, R_TOP_COLS, R_TOP_ROWS);
-    snprintf(status_buf, status_sz, "connected %s:%d", cfg->host, cfg->port);
+    snprintf(status_buf, status_sz, "connected %.56s:%d",
+             cfg->host, cfg->port);
     return ssh;
 }
 
