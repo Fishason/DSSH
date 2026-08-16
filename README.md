@@ -793,6 +793,13 @@ the full progression.
 
 ## Credits
 
+### Contributors
+
+- **[@hedykan](https://github.com/hedykan)** — SELECT-key reconnect, mascot state machine, voice typewriter streaming (#5)
+- **[@cadl](https://github.com/cadl)** — macOS Keychain unlock, fish/Kitty terminal protocol fixes, native Tailscale support (#6, #7)
+
+### Upstream projects
+
 - **[skmtrd/3dssh](https://github.com/skmtrd/3dssh)** — the original
   Japanese-localized 3DS SSH client; DSSH reuses its ANSI/VT100 parser,
   UTF-8 reassembly, and citro2d framing.

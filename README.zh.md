@@ -729,6 +729,13 @@ SSH server (somewhere on the internet)
 
 ## 致谢
 
+### 贡献者
+
+- **[@hedykan](https://github.com/hedykan)** — SELECT 键断线重连、蟹蟹吉祥物状态机、语音打字机流式输出（#5）
+- **[@cadl](https://github.com/cadl)** — macOS Keychain 自动解锁、fish/Kitty 终端协议修复、原生 Tailscale 支持（#6、#7）
+
+### 上游项目
+
 - **[skmtrd/3dssh](https://github.com/skmtrd/3dssh)** — 原日文版，复用了
   ANSI/VT100 解析器、UTF-8 边界处理、citro2d 框架基础
 - **[rime-ice](https://github.com/iDvel/rime-ice)** — 拼音词典源
