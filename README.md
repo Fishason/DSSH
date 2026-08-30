@@ -1,3 +1,5 @@
+
+
 <p align="center">
   <b>English</b> · <a href="README.zh.md">中文</a>
 </p>
@@ -741,6 +743,7 @@ DSSH/
 │   ├── renderer.{c,h}         # citro2d rendering (terminal, text, CJK)
 │   ├── keyboard.{c,h}         # Physical buttons + IME routing
 │   ├── softkb.{c,h}           # Soft keyboard + candidate strip + debug page
+│   ├── ai_modal.{c,h}         # Bottom-screen AI ask modal + markdown rendering
 │   ├── ime_pinyin.{c,h}       # Pinyin engine
 │   ├── mascot.{c,h}           # Crab mascot
 │   ├── font_atlas.{c,h}       # Codepoint → glyph index
@@ -774,7 +777,7 @@ SSH server (somewhere on the internet)
 │   ├─ hidScanInput → keyboard_handle_input             │
 │   │   └─ IME mode? → ime_input_letter / page / select │
 │   ├─ hidTouchRead → softkb_touch                      │
-│   │   ├─ candidate strip hit → ime_select             │
+│   │   ├─ candidate strip hit → ime_select                                 │ candidate strip hit │ ime_select             │ candidate strip hit → ime_select             │
 │   │   ├─ key hit → keyboard_emit_for / ime_input      │
 │   │   └─ badge double-tap → debug_mode toggle         │
 │   └─ render: top = renderer_draw_terminal             │
